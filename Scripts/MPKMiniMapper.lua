@@ -821,6 +821,15 @@ end
 
 local function open_midi_input()
   if S.midi_input then return end
+
+  -- CreateMIDIInput is only available in recent REAPER builds.
+  -- Older installs expose the enumeration functions but not the read API.
+  if not reaper.CreateMIDIInput then
+    S.midi_unavailable = true
+    status("Direct MIDI input not available in this REAPER build — please update REAPER.")
+    return
+  end
+
   local dev,name=find_mpk_mini()
   S.midi_device=dev
   if dev<0 then status("MPK Mini not found — check REAPER MIDI preferences"); return end
@@ -1500,6 +1509,17 @@ end
 -- UI — MASTER DRAW
 -- ============================================================
 
+-- Persistent warning banner drawn at the bottom of any mode when
+-- CreateMIDIInput is unavailable in this REAPER build.
+local function draw_midi_unavailable_banner()
+  if not S.midi_unavailable then return end
+  local bh = 18
+  fill_rect(0, gfx.h-bh, gfx.w, bh, {0.55,0.20,0.10})
+  draw_strc(0, gfx.h-bh+3, gfx.w,
+    "MIDI input unavailable — update REAPER for full functionality",
+    CT, FONT_SMALL)
+end
+
 local function draw_ui()
   gfx.setfont(FONT_BOLD,  "Arial",13,string.byte("b"))
   gfx.setfont(FONT_NORMAL,"Arial",12,0)
@@ -1507,6 +1527,7 @@ local function draw_ui()
   if S.window_mode==MODE_MINI then draw_mini()
   elseif S.window_mode==MODE_DASHBOARD then draw_dashboard()
   else draw_setup() end
+  draw_midi_unavailable_banner()
   S.prev_mouse_lb=gfx.mouse_lb; S.prev_mouse_wheel=gfx.mouse_wheel
   gfx.update()
 end
