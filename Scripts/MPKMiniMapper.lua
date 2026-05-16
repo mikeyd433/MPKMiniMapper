@@ -638,6 +638,8 @@ local function autofill_params(profile,track,fx_idx,category)
           for p,pn in pairs(pnames) do
             if not used[p] and icontains(pn,kw) then
               profile.knob_params[k]=p; profile.knob_labels[k]=pn
+              -- Snapshot the current value as the "factory default" for future resets
+              profile.knob_defaults[k]=reaper.TrackFX_GetParamNormalized(track,fx_idx,p)
               used[p]=true; found=true; break
             end
           end
@@ -657,6 +659,8 @@ local function autofill_params(profile,track,fx_idx,category)
         for p,pn in pairs(pnames) do
           if not used[p] and icontains(pn,kw) then
             profile.knob_params[k]=p; profile.knob_labels[k]=pn
+            -- Snapshot current value as "factory default" for future resets
+            profile.knob_defaults[k]=reaper.TrackFX_GetParamNormalized(track,fx_idx,p)
             used[p]=true; found=true; break
           end
         end
@@ -672,6 +676,7 @@ local function get_profile(plugin_name,bank_id,track,fx_idx)
   local profile={
     knob_params     ={-1,-1,-1,-1,-1,-1,-1,-1},
     knob_labels     ={"","","","","","","",""},
+    knob_defaults   ={0,0,0,0,0,0,0,0},   -- normalized value snapshotted on first assignment
     knob_min        ={0,0,0,0,0,0,0,0},   -- normalized lower bound for range
     knob_max        ={1,1,1,1,1,1,1,1},   -- normalized upper bound for range
     knob_relative   ={false,false,false,false,false,false,false,false},
@@ -807,8 +812,7 @@ local function bank1_reset(knob,track)
       for p=0,n-1 do
         local _,pn=reaper.TrackFX_GetParamName(track,fx,p,"")
         if icontains(pn,"wet") or icontains(pn,"mix") then
-          local _,_,_,def=reaper.TrackFX_GetParam(track,fx,p)
-          reaper.TrackFX_SetParamNormalized(track,fx,p,def); break
+          reaper.TrackFX_SetParamNormalized(track,fx,p,0.5); break  -- 50% wet as default
         end
       end
     end
@@ -819,8 +823,7 @@ local function bank1_reset(knob,track)
       for p=0,n-1 do
         local _,pn=reaper.TrackFX_GetParamName(track,fx,p,"")
         if icontains(pn,"wet") or icontains(pn,"mix") then
-          local _,_,_,def=reaper.TrackFX_GetParam(track,fx,p)
-          reaper.TrackFX_SetParamNormalized(track,fx,p,def); break
+          reaper.TrackFX_SetParamNormalized(track,fx,p,0.5); break  -- 50% wet as default
         end
       end
     end
@@ -872,7 +875,7 @@ local function plugin_bank_reset(knob,track,bank_id)
   local fx,pname=find_fx(track,cat); if not fx then return end
   local profile=get_profile(pname,bank_id,track,fx)
   local param=profile.knob_params[knob]; if param<0 then return end
-  local _,_,_,def=reaper.TrackFX_GetParam(track,fx,param)
+  local def=profile.knob_defaults and profile.knob_defaults[knob] or 0
   reaper.TrackFX_SetParamNormalized(track,fx,param,def)
 end
 
@@ -896,7 +899,7 @@ local function drum_bank_reset(knob,track)
   local fx,pname=find_fx(track,"Drums"); if not fx then return end
   local profile=get_profile(pname,BANK_DRUMS,track,fx)
   local param=profile.knob_params[knob]; if param<0 then return end
-  local _,_,_,def=reaper.TrackFX_GetParam(track,fx,param)
+  local def=profile.knob_defaults and profile.knob_defaults[knob] or 0
   reaper.TrackFX_SetParamNormalized(track,fx,param,def)
 end
 
@@ -1433,6 +1436,8 @@ build_param_cache = function(knob)
     fx=find_fx(track,BANK_TO_CAT[bank])
   end
   if not fx then return end
+  -- "— None —" at the top lets the user clear an existing assignment
+  S.param_cache[1]={idx=-1, name="\xe2\x80\x94 None \xe2\x80\x94"}
   local n=reaper.TrackFX_GetNumParams(track,fx)
   for p=0,n-1 do
     local _,pn=reaper.TrackFX_GetParamName(track,fx,p,"")
@@ -1461,8 +1466,18 @@ end
 local function assign_param(knob,param_idx,param_name)
   local profile,fx,track=knob_context(knob)
   if not profile then return end
+  if param_idx<0 then
+    -- "— None —" selected: clear the assignment
+    profile.knob_params[knob]=-1; profile.knob_labels[knob]=""
+    S.knob_labels[knob]="—"; S.knob_active[knob]=false
+    S.dropdown_open=nil; status("K"..knob.." cleared"); return
+  end
   profile.knob_params[knob]=param_idx
   profile.knob_labels[knob]=param_name
+  -- Snapshot current value as "factory default" for future Reset presses
+  if track and fx then
+    profile.knob_defaults[knob]=reaper.TrackFX_GetParamNormalized(track,fx,param_idx)
+  end
   S.knob_labels[knob]=profile.knob_names[knob]~="" and profile.knob_names[knob] or param_name
   S.knob_active[knob]=true
   S.dropdown_open=nil
