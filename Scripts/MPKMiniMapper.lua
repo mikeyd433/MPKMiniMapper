@@ -852,7 +852,36 @@ local function plugin_bank_apply(knob,cc_val,track,bank_id)
   local cat=BANK_TO_CAT[bank_id]; if not cat then return end
   local fx,pname=find_fx(track,cat); if not fx then return end
   local profile=get_profile(pname,bank_id,track,fx)
-  local param=profile.knob_params[knob]; if param<0 then return end
+  -- Ensure knob_defaults exists (profiles loaded from older config files may be missing it)
+  if not profile.knob_defaults then profile.knob_defaults={0,0,0,0,0,0,0,0} end
+  local param=profile.knob_params[knob]
+  if not param or param<0 then
+    -- Lazy autofill: if this knob has no assignment yet, try to find one now using the
+    -- priority keywords. This recovers profiles saved before synonyms were added, or
+    -- profiles created before the plugin was confirmed in the library.
+    local slots=PARAM_PRIORITIES[cat] or {}
+    local slot=slots[knob]
+    if slot then
+      local n=reaper.TrackFX_GetNumParams(track,fx)
+      for p=0,n-1 do
+        local _,pn=reaper.TrackFX_GetParamName(track,fx,p,"")
+        for _,kw in ipairs(slot) do
+          if icontains(pn,kw) then
+            local taken=false
+            for ok=1,8 do if ok~=knob and profile.knob_params[ok]==p then taken=true; break end end
+            if not taken then
+              profile.knob_params[knob]=p; profile.knob_labels[knob]=pn
+              profile.knob_defaults[knob]=reaper.TrackFX_GetParamNormalized(track,fx,p)
+              S.knob_active[knob]=true; refresh_knob_labels(S.last_track)
+              param=p; break
+            end
+          end
+        end
+        if param and param>=0 then break end
+      end
+    end
+    if not param or param<0 then return end
+  end
 
   local norm=cc_norm(cc_val)
   local lo=profile.knob_min[knob] or 0
@@ -1632,6 +1661,83 @@ local function get_knob_value_str(k)
   end
 end
 
+-- Draws a value ring arc around a knob circle.
+-- Arc runs from 7 o'clock (min) clockwise 300° to 5 o'clock (max).
+-- value: 0-1 normalized (nil = skip fill, just draw background track).
+-- r: ring radius (should be kr+3 or so, just outside the knob circle).
+local function draw_value_ring(cx, cy, r, value, col)
+  local sa=2.094; local sw=5.236  -- math.rad(120°), math.rad(300°)
+  local n=36
+  local cos=math.cos; local sin=math.sin
+  local fill_n=value and clamp(math.floor(n*value+0.5),0,n) or 0
+  for i=0,n-1 do
+    local a1=sa+(i/n)*sw; local a2=sa+((i+1)/n)*sw
+    if i<fill_n then gfx.set(col[1],col[2],col[3],1)
+    else gfx.set(0.22,0.22,0.30,1) end
+    for _,rr in ipairs({r,r+1}) do
+      gfx.line(cx+rr*cos(a1),cy+rr*sin(a1),cx+rr*cos(a2),cy+rr*sin(a2),1)
+    end
+  end
+end
+
+-- Returns 0-1 normalized value for knob k's current state (for the value ring).
+-- Returns nil when no meaningful scalar value is available (scrub, inactive, etc.).
+local function get_knob_value_norm(k)
+  local track=S.last_track; if not track then return nil end
+  if not S.knob_active[k] then return nil end
+  local bank=S.active_bank
+  if bank==BANK_FOLLOW then
+    if k==1 then return clamp(reaper.GetMediaTrackInfo_Value(track,"D_VOL")/2.0,0,1)
+    elseif k==2 then return clamp((reaper.GetMediaTrackInfo_Value(track,"D_PAN")+1)/2,0,1)
+    elseif k==3 then return clamp((reaper.GetMediaTrackInfo_Value(track,"D_PITCH")+12)/24,0,1)
+    elseif k==4 then
+      local fx=find_fx(track,"EQ"); if not fx then return nil end
+      for p=0,reaper.TrackFX_GetNumParams(track,fx)-1 do
+        local _,pn=reaper.TrackFX_GetParamName(track,fx,p,"")
+        if icontains(pn,"high pass") or icontains(pn,"hi cut") or icontains(pn,"hpf")
+        or icontains(pn,"high cut") or icontains(pn,"hp freq") or icontains(pn,"highpass") then
+          return reaper.TrackFX_GetParamNormalized(track,fx,p) end
+      end
+    elseif k==5 then return nil
+    elseif k==6 then
+      local fx=find_fx(track,"Reverb"); if not fx then return nil end
+      for p=0,reaper.TrackFX_GetNumParams(track,fx)-1 do
+        local _,pn=reaper.TrackFX_GetParamName(track,fx,p,"")
+        if icontains(pn,"wet") or icontains(pn,"mix") then
+          return reaper.TrackFX_GetParamNormalized(track,fx,p) end
+      end
+    elseif k==7 then
+      local fx=find_fx(track,"Delay"); if not fx then return nil end
+      for p=0,reaper.TrackFX_GetNumParams(track,fx)-1 do
+        local _,pn=reaper.TrackFX_GetParamName(track,fx,p,"")
+        if icontains(pn,"wet") or icontains(pn,"mix") then
+          return reaper.TrackFX_GetParamNormalized(track,fx,p) end
+      end
+    elseif k==8 then
+      local fx=find_fx(track,"EQ"); if not fx then return nil end
+      for p=0,reaper.TrackFX_GetNumParams(track,fx)-1 do
+        local _,pn=reaper.TrackFX_GetParamName(track,fx,p,"")
+        if icontains(pn,"low pass") or icontains(pn,"lo cut") or icontains(pn,"lpf")
+        or icontains(pn,"low cut") or icontains(pn,"lp freq") or icontains(pn,"lowpass") then
+          return reaper.TrackFX_GetParamNormalized(track,fx,p) end
+      end
+    end
+    return nil
+  else
+    local cat; local fx; local pname
+    if bank==BANK_DRUMS then cat="Drums"; fx,pname=find_fx(track,"Drums")
+    else cat=BANK_TO_CAT[bank]; if cat then fx,pname=find_fx(track,cat) end end
+    if not fx then return nil end
+    local profile=get_profile(pname,bank,track,fx)
+    local pi=profile.knob_params[k]; if not pi or pi<0 then return nil end
+    local lo=profile.knob_min[k] or 0
+    local hi=profile.knob_max[k] or 1
+    if hi<=lo then return nil end
+    local v=reaper.TrackFX_GetParamNormalized(track,fx,pi)
+    return clamp((v-lo)/(hi-lo),0,1)
+  end
+end
+
 -- Draws a small floating tooltip box near the mouse cursor.
 local function draw_tooltip(txt, mx, my)
   gfx.setfont(FONT_SMALL)
@@ -1683,6 +1789,10 @@ local function draw_mini()
     local active=S.knob_active[k]
     local age=now-(S.knob_touched_time[k] or 0)
     local glow=active and (age<GLOW_DUR and (1.0-age/GLOW_DUR) or 0) or 0
+    -- Value ring (drawn first so knob circle renders on top)
+    if active then
+      draw_value_ring(cx,cy,kr+4,get_knob_value_norm(k),bc)
+    end
     -- Filled body: shifts toward bank colour as glow fades in
     if active then
       gfx.set(0.22+bc[1]*0.78*glow, 0.22+bc[2]*0.78*glow, 0.28+bc[3]*0.72*glow)
@@ -1764,6 +1874,10 @@ local function draw_dashboard()
     local cx_=math.floor((col-1)*kcw+kcw/2); local cy_=kcy[row]
     local active=S.knob_active[k]
     local no_reset=(S.active_bank==BANK_FOLLOW and k==5)
+    -- Value ring (drawn before circle so circle sits on top)
+    if active then
+      draw_value_ring(cx_,cy_,kr+5,get_knob_value_norm(k),bc)
+    end
     -- Circle body
     set_col(active and {0.3,0.3,0.38} or CBTN); gfx.circle(cx_,cy_,kr,1,1)
     set_col(CBR); gfx.circle(cx_,cy_,kr,0,1)
