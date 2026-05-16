@@ -2080,37 +2080,65 @@ local ALL_CATS={"Reverb","Delay","Pan","EQ","Distortion","Modulation","Drums","I
 
 local function draw_library(x,y,w,h)
   fill_rect(x,y,w,h,CP); stroke_rect(x,y,w,h,CBR)
-  draw_str(x+6,y+8,"Plugin Library  (click row to cycle category)",CT,FONT_BOLD)
-  local cx={x+4,x+math.floor(w*0.38),x+math.floor(w*0.60),x+math.floor(w*0.82)}
-  local hdr_y=y+36
-  draw_str(cx[1],hdr_y,"Plugin Name",CD,FONT_SMALL)
-  draw_str(cx[2],hdr_y,"Guessed",CD,FONT_SMALL)
-  draw_str(cx[3],hdr_y,"Confirmed",CD,FONT_SMALL)
-  draw_str(cx[4],hdr_y,"Status",CD,FONT_SMALL)
+  draw_str(x+6,y+8,"Plugin Library",CT,FONT_BOLD)
+
+  -- Column positions
+  local nx=x+4                        -- Plugin Name
+  local gx=x+math.floor(w*0.40)      -- Guessed category
+  local bx=x+math.floor(w*0.63)      -- Confirm / Change buttons
+  local sx=x+math.floor(w*0.88)      -- Status
+
+  local hdr_y=y+32
+  draw_str(nx,hdr_y,"Plugin Name",CD,FONT_SMALL)
+  draw_str(gx,hdr_y,"Guessed",CD,FONT_SMALL)
+  draw_str(sx,hdr_y,"Status",CD,FONT_SMALL)
+
   local plugins={}
   for name,e in pairs(S.plugin_library) do plugins[#plugins+1]={name=name,e=e} end
   table.sort(plugins,function(a,b) return a.name<b.name end)
-  local rh=24; local list_y=y+60; local vis=math.floor((h-60)/rh)
+
+  local rh=26; local list_y=y+54; local vis=math.floor((h-54)/rh)
   local wheel=gfx.mouse_wheel-S.prev_mouse_wheel
   if wheel~=0 and hov(x,y,w,h) then
     S.lib_scroll=clamp(S.lib_scroll-math.floor(wheel/120),0,math.max(0,#plugins-vis))
   end
+
+  -- Build the showmenu string once
+  local cat_menu=table.concat(ALL_CATS,"|")
+
   for i=1,math.min(vis,#plugins-S.lib_scroll) do
     local p=plugins[i+S.lib_scroll]; local ry=list_y+(i-1)*rh
     if hov(x,ry,w,rh) then fill_rect(x,ry,w,rh,CBTH) end
-    draw_str(cx[1],ry+2,p.name:sub(1,26),CT,FONT_SMALL)
-    draw_str(cx[2],ry+2,p.e.guessed or "",CD,FONT_SMALL)
-    draw_str(cx[3],ry+2,p.e.confirmed or "",CT,FONT_SMALL)
-    local sc=p.e.status=="Confirmed" and COK or CWN
-    draw_str(cx[4],ry+2,p.e.status or "",sc,FONT_SMALL)
-    -- Click cycles through categories
-    if clicked(x,ry,w,rh) then
-      local cur_idx=1
-      for ci,c in ipairs(ALL_CATS) do if c==p.e.confirmed then cur_idx=ci; break end end
-      p.e.confirmed=ALL_CATS[(cur_idx%#ALL_CATS)+1]
-      p.e.status="Confirmed"
-      status("Confirmed: "..p.name.." → "..p.e.confirmed)
-      refresh_knob_labels(S.last_track)
+
+    draw_str(nx,ry+5,p.name:sub(1,28),CT,FONT_SMALL)
+    draw_str(gx,ry+5,p.e.guessed or "?",CD,FONT_SMALL)
+
+    local confirmed=p.e.status=="Confirmed"
+    local sc=confirmed and COK or CWN
+    draw_str(sx,ry+5,confirmed and "OK" or "Unconfirmed",sc,FONT_SMALL)
+
+    -- Confirm button (✓): accept the guessed category as-is
+    local cbw=22; local chbw=60
+    if not confirmed then
+      if btn(bx,ry+3,cbw,18,"\xe2\x9c\x93",{0.2,0.45,0.2}) then
+        p.e.confirmed=p.e.guessed or "Unknown"
+        p.e.status="Confirmed"
+        status("Confirmed: "..p.name.." \xe2\x86\x92 "..(p.e.confirmed))
+        refresh_knob_labels(S.last_track)
+      end
+    end
+
+    -- Change button: opens native dropdown to pick a different category
+    local chx=confirmed and bx or (bx+cbw+4)
+    local chw=confirmed and (cbw+4+chbw) or chbw
+    if btn(chx,ry+3,chw,18,"\xe2\x96\xbe "..(p.e.confirmed or "Set\xe2\x80\xa6"),nil) then
+      local choice=gfx.showmenu(cat_menu)
+      if choice>0 then
+        p.e.confirmed=ALL_CATS[choice]
+        p.e.status="Confirmed"
+        status("Set: "..p.name.." \xe2\x86\x92 "..p.e.confirmed)
+        refresh_knob_labels(S.last_track)
+      end
     end
   end
 end
