@@ -2,7 +2,19 @@
 
 This file is the authoritative reference for the MPKMiniMapper project. When in doubt about intended behavior, this document takes precedence. Read this file in full before writing any code.
 
-Last updated: 2026-05-12
+Last updated: 2026-05-14
+
+---
+
+## ⚠ MANDATORY FIRST STEP — DO THIS BEFORE ANYTHING ELSE
+
+**Before reading this spec, before touching any file, before writing a single line of code:**
+
+1. Run `git log --oneline --all` from `C:\Users\micha\Dropbox\MPKMiniMapper` to list every commit on every branch.
+2. List `C:\Users\micha\Dropbox\MPKMiniMapper\.claude\worktrees\` and check each worktree for uncommitted changes (`git diff --stat HEAD` in each one).
+3. The newest `Scripts/MPKMiniMapper.lua` — whether on a branch tip or as uncommitted work in a worktree — is the one true baseline. All edits must be made on top of it.
+
+**Working from any older version will cause regressions. There is no exception to this rule.**
 
 ---
 
