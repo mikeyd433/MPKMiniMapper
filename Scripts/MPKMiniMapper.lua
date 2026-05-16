@@ -396,6 +396,7 @@ local S = {
   device_read_slot   = 1,    -- which device flash slot to GET when reading (1-8)
   sysex_read_pending = false, -- true while waiting for device response
   device_config_open   = false, -- true = show device config editor instead of plugin library
+  _dd_overlay          = nil,   -- set by draw_param_panel when dropdown open; consumed by overlay fn
   device_config_fields = nil,   -- parsed preset fields table (editable in device config editor)
   recsrc_target     = 0x1000, -- expected I_RECSRC value; re-applied if REAPER resets it
 
@@ -715,7 +716,9 @@ local function bank1_apply(knob,cc_val,track)
       local n=reaper.TrackFX_GetNumParams(track,fx)
       for p=0,n-1 do
         local _,pn=reaper.TrackFX_GetParamName(track,fx,p,"")
-        if icontains(pn,"high pass") or icontains(pn,"hp freq") or icontains(pn,"highpass") then
+        if icontains(pn,"high pass") or icontains(pn,"hp freq") or icontains(pn,"highpass")
+        or icontains(pn,"hi cut") or icontains(pn,"high cut") or icontains(pn,"hpf")
+        or icontains(pn,"hi freq") then
           reaper.TrackFX_SetParamNormalized(track,fx,p,norm); break
         end
       end
@@ -768,7 +771,9 @@ local function bank1_apply(knob,cc_val,track)
       local n=reaper.TrackFX_GetNumParams(track,fx)
       for p=0,n-1 do
         local _,pn=reaper.TrackFX_GetParamName(track,fx,p,"")
-        if icontains(pn,"low pass") or icontains(pn,"lp freq") or icontains(pn,"lowpass") then
+        if icontains(pn,"low pass") or icontains(pn,"lp freq") or icontains(pn,"lowpass")
+        or icontains(pn,"lo cut") or icontains(pn,"low cut") or icontains(pn,"lpf")
+        or icontains(pn,"lo freq") then
           reaper.TrackFX_SetParamNormalized(track,fx,p,norm); break
         end
       end
@@ -787,7 +792,9 @@ local function bank1_reset(knob,track)
       local n=reaper.TrackFX_GetNumParams(track,fx)
       for p=0,n-1 do
         local _,pn=reaper.TrackFX_GetParamName(track,fx,p,"")
-        if icontains(pn,"high pass") or icontains(pn,"highpass") then
+        if icontains(pn,"high pass") or icontains(pn,"highpass")
+        or icontains(pn,"hi cut") or icontains(pn,"high cut") or icontains(pn,"hpf")
+        or icontains(pn,"hi freq") then
           reaper.TrackFX_SetParamNormalized(track,fx,p,0.0); break  -- min freq
         end
       end
@@ -823,7 +830,9 @@ local function bank1_reset(knob,track)
       local n=reaper.TrackFX_GetNumParams(track,fx)
       for p=0,n-1 do
         local _,pn=reaper.TrackFX_GetParamName(track,fx,p,"")
-        if icontains(pn,"low pass") or icontains(pn,"lowpass") then
+        if icontains(pn,"low pass") or icontains(pn,"lowpass")
+        or icontains(pn,"lo cut") or icontains(pn,"low cut") or icontains(pn,"lpf")
+        or icontains(pn,"lo freq") then
           reaper.TrackFX_SetParamNormalized(track,fx,p,1.0); break  -- max freq
         end
       end
@@ -1710,6 +1719,12 @@ local function draw_bank_dots(x,y)
     if has then set_col(col); gfx.circle(cx,y,r,1,1)
     else set_col(col,0.3); gfx.circle(cx,y,r,0,1) end
     if b==S.active_bank then set_col(CT); gfx.circle(cx,y,r+2,0,1) end
+    -- Click to switch bank
+    if clicked(cx-r,y-r,r*2+1,r*2+1) then
+      S.active_bank=b
+      refresh_knob_labels(S.last_track)
+      status("Bank: "..(BANK_NAMES[b] or ""))
+    end
   end
 end
 
@@ -1797,6 +1812,10 @@ local function draw_pads(bx,by)
       draw_strc(x,y+math.floor((HW_PH-11)/2),HW_PW,lbl,{0,0,0},FONT_SMALL)
       if clicked(x,y,HW_PW,HW_PH) then
         S.selected_pad=pad; S.selected_knob=nil; S.dropdown_open=nil
+        -- Clicking a pad switches the active bank so knob labels and panels update
+        S.active_bank=pad
+        refresh_knob_labels(S.last_track)
+        status("Bank: "..(BANK_NAMES[pad] or ""))
       end
     end
   end
@@ -1864,20 +1883,10 @@ local function draw_param_panel(x,y,w,h)
     S.dropdown_open=(S.dropdown_open==k) and nil or k; S.dropdown_scroll=0
     if S.dropdown_open then build_param_cache(k) end
   end
+  -- Dropdown list is rendered as an overlay AFTER all other panels (see draw_setup).
+  -- Store its geometry here so the overlay function knows where to draw it.
   if S.dropdown_open==k then
-    local maxr=8; local rh=20; local lh=math.min(maxr,#S.param_cache)*rh
-    fill_rect(dd_x,dd_y+dd_h,dd_w,lh,CP); stroke_rect(dd_x,dd_y+dd_h,dd_w,lh,CBR)
-    local wheel=gfx.mouse_wheel-S.prev_mouse_wheel
-    if wheel~=0 and hov(dd_x,dd_y+dd_h,dd_w,lh) then
-      S.dropdown_scroll=clamp(S.dropdown_scroll-math.floor(wheel/120),0,math.max(0,#S.param_cache-maxr))
-    end
-    for i=1,math.min(maxr,#S.param_cache) do
-      local item=S.param_cache[i+S.dropdown_scroll]; if not item then break end
-      local py=dd_y+dd_h+(i-1)*rh
-      if hov(dd_x,py,dd_w,rh) then fill_rect(dd_x,py,dd_w,rh,CBTH) end
-      draw_str(dd_x+4,py+2,item.name,CT,FONT_SMALL)
-      if clicked(dd_x,py,dd_w,rh) then assign_param(k,item.idx,item.name) end
-    end
+    S._dd_overlay={x=dd_x, y=dd_y+dd_h, w=dd_w, k=k}
   end
 
   -- Min/Max range sliders
@@ -2237,6 +2246,29 @@ local function draw_presets(x,y,w,h)
   end
 end
 
+-- Draws the open parameter-dropdown list on top of everything else in Setup mode.
+-- Called last so it is never covered by other panels.
+local function draw_param_dropdown_overlay()
+  local dd=S._dd_overlay; if not dd then return end
+  S._dd_overlay=nil  -- consumed; draw_param_panel re-sets it each frame while open
+  local maxr=10; local rh=20
+  local items=#S.param_cache
+  if items==0 then return end
+  local lh=math.min(maxr,items)*rh
+  fill_rect(dd.x,dd.y,dd.w,lh,CP); stroke_rect(dd.x,dd.y,dd.w,lh,CBR)
+  local wheel=gfx.mouse_wheel-S.prev_mouse_wheel
+  if wheel~=0 and hov(dd.x,dd.y,dd.w,lh) then
+    S.dropdown_scroll=clamp(S.dropdown_scroll-math.floor(wheel/120),0,math.max(0,items-maxr))
+  end
+  for i=1,math.min(maxr,items) do
+    local item=S.param_cache[i+S.dropdown_scroll]; if not item then break end
+    local py=dd.y+(i-1)*rh
+    if hov(dd.x,py,dd.w,rh) then fill_rect(dd.x,py,dd.w,rh,CBTH) end
+    draw_str(dd.x+4,py+2,item.name,CT,FONT_SMALL)
+    if clicked(dd.x,py,dd.w,rh) then assign_param(dd.k,item.idx,item.name) end
+  end
+end
+
 -- ============================================================
 -- UI — MODE: SETUP — main layout
 -- ============================================================
@@ -2271,6 +2303,9 @@ local function draw_setup()
     draw_library(8,lib_y,gfx.w-pre_w-14,lib_h)
   end
   draw_presets(gfx.w-pre_w-6,lib_y,pre_w,lib_h)
+
+  -- Dropdown overlay drawn last so it sits on top of library and preset panels
+  draw_param_dropdown_overlay()
 
   if S.status_msg~="" and (reaper.time_precise()-S.status_time)<4.0 then
     draw_str(8,gfx.h-36,S.status_msg,CD,FONT_SMALL)
