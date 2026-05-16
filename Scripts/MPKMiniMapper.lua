@@ -1097,6 +1097,7 @@ local function init_midi()
   end
   -- Re-apply routing: adding a plugin to the input FX chain resets I_RECSRC in some REAPER builds
   apply_midi_routing(S.midi_track)
+  reaper.gmem_attach("MPKMiniMapper")  -- connect Lua to the SysEx JSFX gmem namespace
   S.jsfx_rp=0  -- reset ring buffer read pointer
   S.jsfx_ready=true
   status("MIDI bridge ready — route MPK Mini to '"..MIDI_TRACK_NAME.."' track")
@@ -1112,7 +1113,7 @@ local function send_sysex(bytes)
   if not S.jsfx_ready then return false end
   local n=#bytes
   if n>SYSEX_MAX_LEN then return false end
-  if reaper.gmem_read(GMEM_SYSEX_TX)~=0 then return false end  -- TX slot busy
+  if (reaper.gmem_read(GMEM_SYSEX_TX) or 0)~=0 then return false end  -- TX slot busy
   for i=1,n do reaper.gmem_write(GMEM_SYSEX_TX_BUF+(i-1),bytes[i]) end
   reaper.gmem_write(GMEM_SYSEX_TX,n)
   return true
@@ -1149,10 +1150,10 @@ end
 
 local function poll_sysex_rx()
   if not S.jsfx_ready then return end
-  local len=math.floor(reaper.gmem_read(GMEM_SYSEX_RX))
+  local len=math.floor(reaper.gmem_read(GMEM_SYSEX_RX) or 0)
   if len==0 then return end
   local bytes={}
-  for i=0,len-1 do bytes[i+1]=math.floor(reaper.gmem_read(GMEM_SYSEX_RX_BUF+i)) end
+  for i=0,len-1 do bytes[i+1]=math.floor(reaper.gmem_read(GMEM_SYSEX_RX_BUF+i) or 0) end
   reaper.gmem_write(GMEM_SYSEX_RX,0)  -- free slot
   if bytes[1]==0xF0 and bytes[2]==0x47 and bytes[5]==0x61 then
     S.sysex_read_pending=false
