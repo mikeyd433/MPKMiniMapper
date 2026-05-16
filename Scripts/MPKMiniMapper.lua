@@ -393,7 +393,7 @@ local S = {
   jsfx_sysex_idx    = -1,    -- input-chain index of the SysEx JSFX (always 0)
   pad_presets        = {},    -- [1..8] = {bytes={117 bytes}, knob_ccs={8}} or nil
   device_preset_slot = 1,    -- which pad slot is selected in the Device RAM UI (1-8)
-  device_read_slot   = 1,    -- which device flash slot to GET when reading (1-4)
+  device_read_slot   = 1,    -- which device flash slot to GET when reading (1-8)
   sysex_read_pending = false, -- true while waiting for device response
   device_config_open   = false, -- true = show device config editor instead of plugin library
   device_config_fields = nil,   -- parsed preset fields table (editable in device config editor)
@@ -1105,7 +1105,7 @@ end
 
 -- Requests device flash slot `dev_slot` (1-4); response is stored into pad slot S.device_preset_slot.
 local function read_device_preset(dev_slot)
-  dev_slot=math.max(1,math.min(4,dev_slot or S.device_read_slot))
+  dev_slot=math.max(1,math.min(8,dev_slot or S.device_read_slot))
   S.sysex_read_pending=true
   local msg={0xF0,0x47,0x00,0x49,0x63,0x00,0x01,dev_slot,0xF7}
   if send_sysex(msg) then
@@ -1243,7 +1243,7 @@ local function write_device_preset(slot)
 end
 
 local function write_device_preset_to_device(slot)
-  slot = clamp(slot or S.device_preset_slot, 1, 4)
+  slot = clamp(slot or S.device_preset_slot, 1, 8)
   if not S.device_preset_bytes then
     status("Read a preset from device first"); return
   end
@@ -2152,16 +2152,18 @@ local function draw_presets(x,y,w,h)
   end
   dy=dy+2*(ph+4)+6
 
-  -- Device flash slot to pull from when reading (1-4)
+  -- Device flash slot to pull from when reading (1-8, one per pad)
   draw_str(x+6,dy,"From device slot:",CD,FONT_SMALL)
   local sw3=math.floor((w-16)/4)-3
-  for s=1,4 do
-    local sx3=x+6+(s-1)*(sw3+4)
-    if btn(sx3,dy+14,sw3,16,tostring(s),S.device_read_slot==s and CA or nil) then
+  for s=1,8 do
+    local col=(s<=4) and 0 or 1
+    local sx3=x+6+((s-1)%4)*(sw3+4)
+    local sy3=dy+14+col*20
+    if btn(sx3,sy3,sw3,16,tostring(s),S.device_read_slot==s and CA or nil) then
       S.device_read_slot=s
     end
   end
-  dy=dy+38
+  dy=dy+58
 
   -- Read / Send
   local bw2=math.floor((w-16)/2)
