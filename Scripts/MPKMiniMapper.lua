@@ -413,6 +413,7 @@ local S = {
 
   last_cc_raw       = {64,64,64,64,64,64,64,64},  -- default to center for scrub
   knob_touched_time = {0,0,0,0,0,0,0,0},          -- time_precise() of last CC for each knob
+  knob_engaged      = {false,false,false,false,false,false,false,false},  -- soft-takeover: true once knob has caught up to param
   pending_mode      = nil,    -- set in button handlers; applied at start of next loop tick
 
   plugin_library    = {},
@@ -729,16 +730,54 @@ local function find_pitch_fx(track)
   return nil,nil
 end
 
+-- ============================================================
+-- SOFT TAKEOVER (PICKUP MODE)
+-- Prevents parameter jumps when the physical knob position doesn't match the
+-- current parameter value (e.g. after switching banks or selecting a new track).
+-- The knob is "disengaged" after each bank/track change. While disengaged,
+-- incoming CC values are tracked but NOT applied. The knob re-engages the
+-- moment the physical position crosses or lands within ±3 steps of the
+-- current parameter value.
+-- ============================================================
+
+local function reset_knob_engagement()
+  for i=1,8 do S.knob_engaged[i]=false end
+end
+
+-- Check soft takeover. cur_norm is the current param value expressed as 0-1
+-- on the same scale the knob controls (i.e. already mapped through lo/hi).
+-- Returns true if the knob should apply; false to skip this event.
+local function check_engaged(k, cc_val, cur_norm)
+  if S.knob_engaged[k] then return true end
+  local cur_cc = clamp(cur_norm*127, 0, 127)
+  local prev   = S.last_cc_raw[k]
+  -- Engage when crossing or landing within deadzone of current value
+  local crossed = (prev-cur_cc)*(cc_val-cur_cc) <= 0
+  local near    = math.abs(cc_val-cur_cc) <= 3
+  if crossed or near then S.knob_engaged[k]=true; return true end
+  return false
+end
+
 local function bank1_apply(knob,cc_val,track)
   if not track then return end
   local norm=cc_norm(cc_val)
   if knob==1 then
+    -- Soft takeover: volume is 0-2 mapped linearly, so cur_norm = D_VOL/2
+    local cur=clamp(reaper.GetMediaTrackInfo_Value(track,"D_VOL")/2.0,0,1)
+    if not check_engaged(1,cc_val,cur) then return end
     reaper.SetMediaTrackInfo_Value(track,"D_VOL",norm*2.0)
   elseif knob==2 then
+    -- Soft takeover: pan -1..+1 mapped to 0..1
+    local cur=(reaper.GetMediaTrackInfo_Value(track,"D_PAN")+1.0)*0.5
+    if not check_engaged(2,cc_val,cur) then return end
     reaper.SetMediaTrackInfo_Value(track,"D_PAN",norm*2.0-1.0)
   elseif knob==3 then
     local pfx,pp=find_pitch_fx(track)
-    if pfx then reaper.TrackFX_SetParamNormalized(track,pfx,pp,norm) end
+    if pfx then
+      local cur=reaper.TrackFX_GetParamNormalized(track,pfx,pp)
+      if not check_engaged(3,cc_val,cur) then return end
+      reaper.TrackFX_SetParamNormalized(track,pfx,pp,norm)
+    end
   elseif knob==4 then
     local fx=find_fx(track,"EQ")
     if fx then
@@ -748,11 +787,14 @@ local function bank1_apply(knob,cc_val,track)
         if icontains(pn,"high pass") or icontains(pn,"hp freq") or icontains(pn,"highpass")
         or icontains(pn,"hi cut") or icontains(pn,"high cut") or icontains(pn,"hpf")
         or icontains(pn,"hi freq") then
+          local cur=reaper.TrackFX_GetParamNormalized(track,fx,p)
+          if not check_engaged(4,cc_val,cur) then break end
           reaper.TrackFX_SetParamNormalized(track,fx,p,norm); break
         end
       end
     end
   elseif knob==5 then
+    -- Scrub: no soft takeover (relative-style; large-jump guard is already built in)
     if S.scrub_relative then
       -- Relative / infinite mode: hardware knob must be set to relative (increment) mode.
       -- CC values are 2's-complement signed increments centred on 64:
@@ -779,6 +821,8 @@ local function bank1_apply(knob,cc_val,track)
       for p=0,n-1 do
         local _,pn=reaper.TrackFX_GetParamName(track,fx,p,"")
         if icontains(pn,"wet") or icontains(pn,"mix") then
+          local cur=reaper.TrackFX_GetParamNormalized(track,fx,p)
+          if not check_engaged(6,cc_val,cur) then break end
           reaper.TrackFX_SetParamNormalized(track,fx,p,norm); break
         end
       end
@@ -790,6 +834,8 @@ local function bank1_apply(knob,cc_val,track)
       for p=0,n-1 do
         local _,pn=reaper.TrackFX_GetParamName(track,fx,p,"")
         if icontains(pn,"wet") or icontains(pn,"mix") then
+          local cur=reaper.TrackFX_GetParamNormalized(track,fx,p)
+          if not check_engaged(7,cc_val,cur) then break end
           reaper.TrackFX_SetParamNormalized(track,fx,p,norm); break
         end
       end
@@ -803,6 +849,8 @@ local function bank1_apply(knob,cc_val,track)
         if icontains(pn,"low pass") or icontains(pn,"lp freq") or icontains(pn,"lowpass")
         or icontains(pn,"lo cut") or icontains(pn,"low cut") or icontains(pn,"lpf")
         or icontains(pn,"lo freq") then
+          local cur=reaper.TrackFX_GetParamNormalized(track,fx,p)
+          if not check_engaged(8,cc_val,cur) then break end
           reaper.TrackFX_SetParamNormalized(track,fx,p,norm); break
         end
       end
@@ -917,12 +965,17 @@ local function plugin_bank_apply(knob,cc_val,track,bank_id)
   local hi=profile.knob_max[knob] or 1
 
   if profile.knob_relative[knob] then
-    -- Relative mode: use CC delta to increment the current value
+    -- Relative mode: accumulate delta from previous CC value; no soft takeover needed.
     local prev=S.last_cc_raw[knob]
     local cur=reaper.TrackFX_GetParamNormalized(track,fx,param)
     local delta=(cc_val-prev)/127.0*(hi-lo)
     reaper.TrackFX_SetParamNormalized(track,fx,param,clamp(cur+delta,lo,hi))
   else
+    -- Absolute mode: soft takeover — don't apply until knob catches up to current value.
+    local cur=reaper.TrackFX_GetParamNormalized(track,fx,param)
+    -- Express current param as 0-1 on the same scale the knob uses (lo..hi mapped to 0..1)
+    local cur_scaled=clamp((cur-lo)/math.max(hi-lo,0.0001),0,1)
+    if not check_engaged(knob,cc_val,cur_scaled) then return end
     reaper.TrackFX_SetParamNormalized(track,fx,param,lo+norm*(hi-lo))
   end
 end
@@ -949,6 +1002,10 @@ local function drum_bank_apply(knob,cc_val,track)
   local norm=cc_norm(cc_val)
   local lo=profile.knob_min[knob] or 0
   local hi=profile.knob_max[knob] or 1
+  -- Soft takeover
+  local cur=reaper.TrackFX_GetParamNormalized(track,fx,param)
+  local cur_scaled=clamp((cur-lo)/math.max(hi-lo,0.0001),0,1)
+  if not check_engaged(knob,cc_val,cur_scaled) then return end
   reaper.TrackFX_SetParamNormalized(track,fx,param,lo+norm*(hi-lo))
 end
 
@@ -1345,6 +1402,7 @@ local function process_midi_event(msg1,msg2,msg3,track)
     local bank=msg2+1
     if bank>=1 and bank<=8 then
       S.active_bank=bank
+      reset_knob_engagement()   -- knobs must re-engage after bank change
       refresh_knob_labels(track)
       status("Bank: "..(BANK_NAMES[bank] or ""))
       -- Auto-push pad preset to device RAM when pad is selected
@@ -1460,6 +1518,7 @@ local function update_track()
     S.last_track=track
     if track then local _,n=reaper.GetTrackName(track,""); S.last_track_name=n
     else S.last_track_name="No track selected" end
+    reset_knob_engagement()   -- knobs must re-engage when a different track is selected
     refresh_knob_labels(track)
   end
   return track
@@ -1823,9 +1882,13 @@ local function draw_mini()
     local active=S.knob_active[k]
     local age=now-(S.knob_touched_time[k] or 0)
     local glow=active and (age<GLOW_DUR and (1.0-age/GLOW_DUR) or 0) or 0
-    -- Value ring (drawn first so knob circle renders on top)
+    -- Value ring (drawn first so knob circle renders on top).
+    -- When disengaged (waiting for pickup), show physical knob position in amber.
     if active then
-      draw_value_ring(cx,cy,kr+4,get_knob_value_norm(k),bc)
+      local disengaged = (not S.knob_engaged[k]) and age < 4.0
+      local ring_col = disengaged and {0.9,0.6,0.1} or bc
+      local ring_val = disengaged and (S.last_cc_raw[k]/127.0) or get_knob_value_norm(k)
+      draw_value_ring(cx,cy,kr+4,ring_val,ring_col)
     end
     -- Filled body: shifts toward bank colour as glow fades in
     if active then
@@ -1881,6 +1944,7 @@ local function draw_bank_dots(x,y)
     -- Click to switch bank
     if clicked(cx-r,y-r,r*2+1,r*2+1) then
       S.active_bank=b
+      reset_knob_engagement()
       refresh_knob_labels(S.last_track)
       status("Bank: "..(BANK_NAMES[b] or ""))
     end
@@ -1908,9 +1972,14 @@ local function draw_dashboard()
     local cx_=math.floor((col-1)*kcw+kcw/2); local cy_=kcy[row]
     local active=S.knob_active[k]
     local no_reset=(S.active_bank==BANK_FOLLOW and k==5)
-    -- Value ring (drawn before circle so circle sits on top)
+    -- Value ring (drawn before circle so circle sits on top).
+    -- Amber + physical position when waiting for pickup; bank colour + param value when engaged.
     if active then
-      draw_value_ring(cx_,cy_,kr+5,get_knob_value_norm(k),bc)
+      local age_d=reaper.time_precise()-(S.knob_touched_time[k] or 0)
+      local disengaged_d=(not S.knob_engaged[k]) and age_d < 4.0
+      local ring_col_d = disengaged_d and {0.9,0.6,0.1} or bc
+      local ring_val_d = disengaged_d and (S.last_cc_raw[k]/127.0) or get_knob_value_norm(k)
+      draw_value_ring(cx_,cy_,kr+5,ring_val_d,ring_col_d)
     end
     -- Circle body
     set_col(active and {0.3,0.3,0.38} or CBTN); gfx.circle(cx_,cy_,kr,1,1)
@@ -1977,6 +2046,7 @@ local function draw_pads(bx,by)
         S.selected_pad=pad; S.selected_knob=nil; S.dropdown_open=nil
         -- Clicking a pad switches the active bank so knob labels and panels update
         S.active_bank=pad
+        reset_knob_engagement()
         refresh_knob_labels(S.last_track)
         status("Bank: "..(BANK_NAMES[pad] or ""))
       end
