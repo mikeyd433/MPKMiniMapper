@@ -603,18 +603,20 @@ local function autofill_params(profile,track,fx_idx,category)
   end
   local used={}
 
+  -- Iterate params in ascending index order (0..n-1) for deterministic matching.
+  -- Using pairs() on the pnames table gives undefined hash-table iteration order,
+  -- which means the "first" match changes between runs — fixed by explicit index loop.
   if category=="Drums" then
-    -- Match each drum part's keywords to the best available parameter
     for k=1,8 do
       local drum=DRUM_PARTS[k]
       if drum then
         local found=false
         for _,kw in ipairs(drum.kw) do
           if found then break end
-          for p,pn in pairs(pnames) do
-            if not used[p] and icontains(pn,kw) then
+          for p=0,n-1 do
+            local pn=pnames[p]
+            if pn and not used[p] and icontains(pn,kw) then
               profile.knob_params[k]=p; profile.knob_labels[k]=pn
-              -- Snapshot the current value as the "factory default" for future resets
               profile.knob_defaults[k]=reaper.TrackFX_GetParamNormalized(track,fx_idx,p)
               used[p]=true; found=true; break
             end
@@ -627,15 +629,15 @@ local function autofill_params(profile,track,fx_idx,category)
 
   local slots=PARAM_PRIORITIES[category] or {}
   for k=1,8 do
-    local slot=slots[k]  -- array of synonyms for this knob slot
+    local slot=slots[k]
     if slot then
       local found=false
       for _,kw in ipairs(slot) do
         if found then break end
-        for p,pn in pairs(pnames) do
-          if not used[p] and icontains(pn,kw) then
+        for p=0,n-1 do
+          local pn=pnames[p]
+          if pn and not used[p] and icontains(pn,kw) then
             profile.knob_params[k]=p; profile.knob_labels[k]=pn
-            -- Snapshot current value as "factory default" for future resets
             profile.knob_defaults[k]=reaper.TrackFX_GetParamNormalized(track,fx_idx,p)
             used[p]=true; found=true; break
           end
@@ -1816,79 +1818,82 @@ end
 -- UI — MODE: SETUP — hardware layout
 -- ============================================================
 
-local HW_PW=66; local HW_PH=54; local HW_KW=66; local HW_KH=64; local HW_G=8
-local HW_EW=66; local HW_EH=40  -- extra-bank tile size (shorter than physical pads)
+local HW_KW=66; local HW_KH=64; local HW_G=8
 
--- Draw user-created banks beyond slot 8 as a flowing grid below the physical pads.
--- Returns the total height used (0 if no extra banks).
-local function draw_extra_banks(bx,by)
-  local track=S.last_track; local cols=4
-  local extra={}
-  for i=9,MAX_BANKS do if S.bank_defs[i] then extra[#extra+1]=i end end
-  if #extra==0 then return 0 end
+-- Draw all banks as a unified tile grid — same visual style as the preset panel.
+-- cols: number of columns; tile_w/tile_h: tile dimensions.
+-- Slots 1-8 also set S.selected_pad so the drum-pad mapping panel can be opened.
+-- Returns total height used by the grid.
+local function draw_bank_grid(bx,by,total_w)
+  local track=S.last_track
+  local cols=4; local gap=6
+  local tile_w=math.floor((total_w-gap*(cols-1))/cols)
+  local tile_h=50; local row_stride=tile_h+gap
 
-  local label_h=14; local row_h=HW_EH+HW_G
-  local total_h=label_h+math.ceil(#extra/cols)*row_h
+  -- Collect defined slots in order
+  local slots={}
+  for i=1,MAX_BANKS do if S.bank_defs[i] then slots[#slots+1]=i end end
 
-  -- Section label
-  draw_str(bx,by+2,"More Banks",CD,FONT_SMALL)
-  local ey=by+label_h
-
-  for idx,slot in ipairs(extra) do
-    local bdef_e=S.bank_defs[slot]
+  local rows=math.ceil(#slots/cols)
+  for idx,slot in ipairs(slots) do
+    local bdef=S.bank_defs[slot]
     local row_i=math.ceil(idx/cols)-1
     local col_i=(idx-1)%cols
-    local ex=bx+col_i*(HW_EW+HW_G); local ey2=ey+row_i*row_h
-    local sel=(S.active_bank==slot)
-    local col_e=bdef_e.color or {0.5,0.5,0.5}
-    fill_rect(ex,ey2,HW_EW,HW_EH,col_e,sel and 1.0 or 0.55)
-    stroke_rect(ex,ey2,HW_EW,HW_EH,sel and CT or CBR)
-    -- Slot number dimmed in corner
-    draw_str(ex+3,ey2+2,tostring(slot),{0,0,0,0.7},FONT_SMALL)
-    -- Bank name centered
-    draw_strc(ex,ey2+math.floor((HW_EH-11)/2),HW_EW,bdef_e.name:sub(1,7),{0,0,0},FONT_SMALL)
-    if clicked(ex,ey2,HW_EW,HW_EH) then
-      S.selected_pad=nil; S.selected_knob=nil; S.dropdown_open=nil
+    local tx=bx+col_i*(tile_w+gap)
+    local ty=by+row_i*row_stride
+
+    local tc=bdef.color or {0.5,0.5,0.5}
+    local is_active=(S.active_bank==slot)
+    local is_pad_sel=(S.selected_pad==slot)
+
+    -- Background: color-tinted dark (same formula as preset panel)
+    local fade=is_active and 0.30 or 0.14
+    fill_rect(tx,ty,tile_w,tile_h,{
+      0.11+tc[1]*fade, 0.11+tc[2]*fade, 0.13+tc[3]*fade})
+
+    -- Left color strip
+    set_col(tc); gfx.rect(tx,ty,4,tile_h,1)
+
+    -- Active or pad-selected outline
+    if is_pad_sel then stroke_rect(tx,ty,tile_w,tile_h,CT)
+    elseif is_active then stroke_rect(tx,ty,tile_w,tile_h,tc)
+    end
+
+    -- Slot number
+    draw_str(tx+8,ty+4,tostring(slot),CD,FONT_SMALL)
+
+    -- Bank name (main label)
+    local lbl=bdef.name:sub(1,10)
+    -- For drum banks in slots 1-8, show drum pad label if available
+    if slot<=8 and bdef.category=="Drums" and track then
+      local fx,pn=find_fx(track,"Drums")
+      if fx then
+        local prof=get_profile(pn,slot,track,fx)
+        local pl=prof.drum_pad_labels[slot]
+        if pl and pl~="" then lbl=pl:sub(1,10) end
+      end
+    end
+    draw_str(tx+8,ty+16,lbl,CT,FONT_NORMAL)
+
+    -- Category / pinned plugin sub-label
+    local sub
+    if bdef.pinned_plugin then sub="* "..bdef.pinned_plugin:sub(1,11)
+    elseif bdef.category then sub=bdef.category
+    else sub="Follow Track" end
+    draw_str(tx+8,ty+33,sub,CD,FONT_SMALL)
+
+    -- Click: switch bank; also set selected_pad for slots 1-8 (pad mapping)
+    if clicked(tx,ty,tile_w,tile_h) then
+      S.selected_knob=nil; S.dropdown_open=nil
       S.active_bank=slot
+      if slot<=8 then S.selected_pad=slot else S.selected_pad=nil end
       reset_knob_engagement()
       refresh_knob_labels(track)
-      status("Bank: "..(bdef_e.name or ""))
+      status("Bank: "..(bdef.name or ""))
     end
   end
-  return total_h
-end
 
-local function draw_pads(bx,by)
-  local track=S.last_track
-  for row=1,2 do
-    for col=1,4 do
-      local pad=row==1 and (col+4) or col
-      local bdef_p=S.bank_defs[pad]
-      local x=bx+(col-1)*(HW_PW+HW_G); local y=by+(row-1)*(HW_PH+HW_G)
-      local sel=(S.selected_pad==pad)
-      local col_val=bdef_p and bdef_p.color or {0.3,0.3,0.3}
-      fill_rect(x,y,HW_PW,HW_PH,col_val,sel and 1.0 or (bdef_p and 0.6 or 0.2))
-      stroke_rect(x,y,HW_PW,HW_PH,sel and CT or CBR)
-      local lbl=bdef_p and bdef_p.name:sub(1,7) or "Empty"
-      local bcat_p=bdef_p and bdef_p.category
-      if bcat_p=="Drums" and track then
-        local fx,pn=find_fx(track,"Drums")
-        if fx then
-          local prof=get_profile(pn,pad,track,fx)
-          local pl=prof.drum_pad_labels[pad]
-          lbl=(pl~="" and pl or (DRUM_PARTS[pad] and DRUM_PARTS[pad].label or lbl)):sub(1,7)
-        end
-      end
-      draw_strc(x,y+math.floor((HW_PH-11)/2),HW_PW,lbl,bdef_p and {0,0,0} or CD,FONT_SMALL)
-      if clicked(x,y,HW_PW,HW_PH) and bdef_p then
-        S.selected_pad=pad; S.selected_knob=nil; S.dropdown_open=nil
-        S.active_bank=pad
-        reset_knob_engagement()
-        refresh_knob_labels(S.last_track)
-        status("Bank: "..(bdef_p.name or ""))
-      end
-    end
-  end
+  return rows*row_stride
 end
 
 local function draw_knobs(bx,by)
@@ -2417,15 +2422,13 @@ local function draw_setup()
   draw_str(8,42,"Track: "..S.last_track_name.."   Bank: "..(bdef_su and bdef_su.name or ""),CD,FONT_SMALL)
 
   local hw_x,hw_y=8,70
-  local pads_total_w=4*(HW_PW+HW_G)-HW_G
-  draw_pads(hw_x,hw_y)
-  local pads_h=2*(HW_PH+HW_G)-HW_G
-  local extra_h=draw_extra_banks(hw_x,hw_y+pads_h+HW_G)
-  draw_knobs(hw_x+pads_total_w+24,hw_y)
+  local grid_w=4*(HW_KW+HW_G)-HW_G  -- match knob section width (4 cols × 74 - 8 = 288)
+  local grid_h=draw_bank_grid(hw_x,hw_y,grid_w)
+  draw_knobs(hw_x+grid_w+24,hw_y)
 
-  local panel_x=hw_x+pads_total_w+24+4*(HW_KW+HW_G)-HW_G+14
+  local panel_x=hw_x+grid_w+24+4*(HW_KW+HW_G)-HW_G+14
   local panel_w=gfx.w-panel_x-6
-  local panel_h=math.max(300,2*(HW_PH+HW_G)+10)
+  local panel_h=math.max(300,grid_h)
 
   if S.selected_knob then draw_param_panel(panel_x,hw_y,panel_w,panel_h)
   elseif S.selected_pad then draw_pad_panel(panel_x,hw_y,panel_w,panel_h)
