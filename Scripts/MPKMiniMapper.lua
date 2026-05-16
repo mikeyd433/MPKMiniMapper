@@ -304,8 +304,8 @@ local PARAM_PRIORITIES = {
   EQ={
     {"Low Shelf Gain","Low Gain","Bass Gain"},
     {"High Shelf Gain","High Gain","Treble Gain"},
-    {"Low Pass","LP Freq","Lowpass"},
-    {"High Pass","HP Freq","Highpass"},
+    {"Low Pass","LP Freq","Lowpass","Lo Cut","Low Cut","LoCut","Lowcut","LPF","Lo Freq"},
+    {"High Pass","HP Freq","Highpass","Hi Cut","High Cut","HiCut","Highcut","HPF","Hi Freq"},
     {"Mid Freq","Peak Freq","Bell Freq"},
     {"Mid Gain","Peak Gain","Bell Gain"},
     {"Mid Q","Peak Q","Q"},
@@ -1916,6 +1916,22 @@ local function draw_param_panel(x,y,w,h)
     local ry2=profile and (profile.confirmed and y+190 or y+216) or y+190
     if btn(x+6,ry2,120,22,"Reset to Default",CRST) then
       reset_knob(k,S.last_track)
+    end
+  end
+
+  -- Re-fill: re-run keyword matching against the plugin for plugin banks only.
+  -- Useful when auto-fill ran before the synonym list was complete (e.g. Lo Cut / Hi Cut).
+  local cat=BANK_TO_CAT[S.active_bank]
+  if cat and S.last_track and profile then
+    local rfx,rpname=find_fx(S.last_track,cat)
+    if rfx then
+      local rfy=y+h-30
+      if btn(x+6,rfy,w-12,22,"Re-auto-fill all knobs") then
+        autofill_params(profile,S.last_track,rfx,cat)
+        profile.confirmed=false
+        refresh_knob_labels(S.last_track)
+        status("Re-filled: "..rpname)
+      end
     end
   end
 end
