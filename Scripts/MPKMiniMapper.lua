@@ -384,9 +384,10 @@ local S = {
   jsfx_idx          = -1,    -- local input-chain index of the JSFX (for TrackFX_GetParam)
   jsfx_rp           = 0,     -- Lua-side read pointer into the slider ring buffer (0-7)
   jsfx_sysex_idx    = -1,    -- input-chain index of the SysEx JSFX (always 0)
-  device_preset_bytes = nil,   -- raw bytes from last device read (table or nil)
-  device_preset_slot  = 1,     -- slot 1-4 to read/write
-  sysex_read_pending  = false, -- true while waiting for device response
+  pad_presets        = {},    -- [1..8] = {bytes={117 bytes}, knob_ccs={8}} or nil
+  device_preset_slot = 1,    -- which pad slot is selected in the Device RAM UI (1-8)
+  device_read_slot   = 1,    -- which device flash slot to GET when reading (1-4)
+  sysex_read_pending = false, -- true while waiting for device response
   recsrc_target     = 0x1000, -- expected I_RECSRC value; re-applied if REAPER resets it
 
   knob_ccs          = {table.unpack(DEFAULT_KNOB_CCS)},
@@ -505,7 +506,8 @@ local function save_config()
     knob_ccs=S.knob_ccs, scrub_sensitivity=S.scrub_sensitivity,
     scrub_relative=S.scrub_relative,
     plugin_library=S.plugin_library, plugin_profiles=S.plugin_profiles,
-    device_preset_slot=S.device_preset_slot,
+    device_preset_slot=S.device_preset_slot, device_read_slot=S.device_read_slot,
+    pad_presets=S.pad_presets,
   }
   local f=io.open(path,"w")
   if f then f:write(json.encode(data)); f:close(); status("Saved: "..path)
@@ -530,6 +532,15 @@ local function load_config(path)
     for i=1,8 do if data.knob_ccs[i] then S.knob_ccs[i]=data.knob_ccs[i] end end
   end
   if data.device_preset_slot then S.device_preset_slot = data.device_preset_slot end
+  if data.device_read_slot   then S.device_read_slot   = data.device_read_slot   end
+  if type(data.pad_presets)=="table" then
+    for i=1,8 do
+      local p=data.pad_presets[i]
+      if type(p)=="table" and type(p.bytes)=="table" and type(p.knob_ccs)=="table" then
+        S.pad_presets[i]=p
+      end
+    end
+  end
   status("Config loaded")
 end
 
@@ -1119,13 +1130,13 @@ local function send_sysex(bytes)
   return true
 end
 
-local function read_device_preset(slot)
-  slot=math.max(1,math.min(4,slot or S.device_preset_slot))
-  S.device_preset_slot=slot
+-- Requests device flash slot `dev_slot` (1-4); response is stored into pad slot S.device_preset_slot.
+local function read_device_preset(dev_slot)
+  dev_slot=math.max(1,math.min(4,dev_slot or S.device_read_slot))
   S.sysex_read_pending=true
-  local msg={0xF0,0x47,0x00,0x49,0x63,0x00,0x01,slot,0xF7}
+  local msg={0xF0,0x47,0x00,0x49,0x63,0x00,0x01,dev_slot,0xF7}
   if send_sysex(msg) then
-    status("Reading preset "..slot.." from device\xe2\x80\xa6")
+    status("Reading device slot "..dev_slot.." \xe2\x86\x92 pad "..S.device_preset_slot.."…")
   else
     status("Read failed: bridge not ready"); S.sysex_read_pending=false
   end
@@ -1136,16 +1147,20 @@ end
 --   [8]=preset_num [9..114]=106-byte payload [115]=F7
 -- Knob CC at payload offset 84 → bytes[9+84+(k-1)*3] for knob k
 local function apply_preset_bytes(bytes)
-  S.device_preset_bytes=bytes
   local new_ccs={}
   for k=1,8 do
     local idx=9+84+(k-1)*3
     local cc=bytes[idx]
     new_ccs[k]=(cc and cc>=0 and cc<=127) and cc or S.knob_ccs[k]
   end
-  S.knob_ccs=new_ccs
-  refresh_knob_labels(S.last_track)
-  status("Preset "..S.device_preset_slot.." read — CCs: "..table.concat(new_ccs,","))
+  -- Store full bytes + parsed CCs into the selected pad slot
+  S.pad_presets[S.device_preset_slot]={bytes=bytes, knob_ccs=new_ccs}
+  -- If this pad is the active bank, also apply CCs live
+  if S.device_preset_slot==S.active_bank then
+    S.knob_ccs=new_ccs
+    refresh_knob_labels(S.last_track)
+  end
+  status("Pad "..S.device_preset_slot.." captured — CCs: "..table.concat(new_ccs,","))
 end
 
 local function poll_sysex_rx()
@@ -1162,19 +1177,20 @@ local function poll_sysex_rx()
 end
 
 local function write_device_preset(slot)
-  slot=math.max(1,math.min(4,slot or S.device_preset_slot))
-  if not S.device_preset_bytes then
-    status("Read a preset from device first"); return
+  slot=math.max(1,math.min(8,slot or S.device_preset_slot))
+  local pad=S.pad_presets[slot]
+  if not pad or not pad.bytes then
+    status("Capture pad "..slot.." first (click Read)"); return
   end
   local bytes={}
-  for i,b in ipairs(S.device_preset_bytes) do bytes[i]=b end
-  bytes[8]=slot
+  for i,b in ipairs(pad.bytes) do bytes[i]=b end
+  bytes[8]=1  -- always apply to device slot 1 / working RAM
   for k=1,8 do
     local idx=9+84+(k-1)*3
-    if idx<=#bytes-1 then bytes[idx]=S.knob_ccs[k] end
+    if idx<=#bytes-1 then bytes[idx]=pad.knob_ccs[k] end
   end
   if send_sysex(bytes) then
-    status("Knob CCs sent to device RAM (slot "..slot..")")
+    status("Pad "..slot.." preset sent to device RAM")
   else
     status("Send failed: bridge not ready")
   end
@@ -1197,6 +1213,8 @@ local function process_midi_event(msg1,msg2,msg3,track)
       S.active_bank=bank
       refresh_knob_labels(track)
       status("Bank: "..(BANK_NAMES[bank] or ""))
+      -- Auto-push pad preset to device RAM when pad is selected
+      if S.pad_presets[bank] then write_device_preset(bank) end
     end
     return
   end
@@ -1935,40 +1953,59 @@ local function draw_presets(x,y,w,h)
     if ok then load_config(path) end
   end
 
-  -- ── MPK Mini Device RAM ──
+  -- ── MPK Mini — Pad Presets ──
   local dy=y+102
   set_col(CBR); gfx.line(x+6,dy,x+w-6,dy,0); dy=dy+10
-  draw_str(x+6,dy,"MPK Mini — Device RAM",CT,FONT_BOLD); dy=dy+24
+  draw_str(x+6,dy,"MPK Mini — Pad Presets",CT,FONT_BOLD); dy=dy+22
 
-  -- Slot selector 1–4
-  draw_str(x+6,dy,"Slot:",CD,FONT_SMALL)
-  local sw2=math.floor((w-54)/4)
+  -- 8-pad grid (matches hardware: row1=P5-P8 top, row2=P1-P4 bottom).
+  -- Filled=captured, dimmed=empty.  Click to select the pad to configure.
+  local pw=math.floor((w-16)/4)-3; local ph=22
+  local pad_order={5,6,7,8, 1,2,3,4}
+  for row=0,1 do
+    for col=0,3 do
+      local pn=pad_order[row*4+col+1]
+      local px=x+6+col*(pw+4); local py=dy+row*(ph+4)
+      local has=S.pad_presets[pn]~=nil
+      local sel=S.device_preset_slot==pn
+      local bc=sel and BANK_COLORS[pn] or (has and {0.20,0.32,0.20} or nil)
+      if btn(px,py,pw,ph,"P"..pn,bc) then S.device_preset_slot=pn end
+    end
+  end
+  dy=dy+2*(ph+4)+6
+
+  -- Device flash slot to pull from when reading (1-4)
+  draw_str(x+6,dy,"From device slot:",CD,FONT_SMALL)
+  local sw3=math.floor((w-16)/4)-3
   for s=1,4 do
-    local sx2=x+40+(s-1)*(sw2+3)
-    local sc=S.device_preset_slot==s and CA or nil
-    if btn(sx2,dy-2,sw2,18,tostring(s),sc) then S.device_preset_slot=s end
+    local sx3=x+6+(s-1)*(sw3+4)
+    if btn(sx3,dy+14,sw3,16,tostring(s),S.device_read_slot==s and CA or nil) then
+      S.device_read_slot=s
+    end
   end
-  dy=dy+28
+  dy=dy+38
 
-  -- Read / Send buttons
+  -- Read / Send
   local bw2=math.floor((w-16)/2)
-  local rlbl=S.sysex_read_pending and "Reading\xe2\x80\xa6" or "Read from Device"
+  local rlbl=S.sysex_read_pending and "Reading\xe2\x80\xa6" or
+             ("Read \xe2\x86\x92 P"..S.device_preset_slot)
   if btn(x+6,dy,bw2,22,rlbl,S.sysex_read_pending and CA or nil) then
-    if not S.sysex_read_pending then read_device_preset(S.device_preset_slot) end
+    if not S.sysex_read_pending then read_device_preset(S.device_read_slot) end
   end
-  local can_send=S.device_preset_bytes~=nil
-  local sdim=can_send and nil or {0.22,0.22,0.27}
-  if btn(x+10+bw2,dy,bw2,22,"Send to Device",sdim) then
+  local can_send=S.pad_presets[S.device_preset_slot]~=nil
+  if btn(x+10+bw2,dy,bw2,22,"Send P"..S.device_preset_slot,
+         can_send and nil or {0.22,0.22,0.27}) then
     if can_send then write_device_preset(S.device_preset_slot) end
   end
   dy=dy+30
 
-  -- Status / cache info
-  if S.device_preset_bytes then
-    draw_str(x+6,dy,"Cached: slot "..S.device_preset_slot.."  — CCs: "..
-      table.concat(S.knob_ccs,","),COK,FONT_SMALL)
+  -- Status line for selected pad
+  local pad=S.pad_presets[S.device_preset_slot]
+  if pad then
+    draw_str(x+6,dy,"P"..S.device_preset_slot.." CCs: "..
+      table.concat(pad.knob_ccs,","),COK,FONT_SMALL)
   else
-    draw_str(x+6,dy,"No cache — click Read to load from device",CD,FONT_SMALL)
+    draw_str(x+6,dy,"P"..S.device_preset_slot..": not captured yet",CD,FONT_SMALL)
   end
 end
 
