@@ -204,6 +204,47 @@ while(midirecv(offset,msg1,msg2,msg3))(
 );
 ]]
 
+-- Dedicated SysEx JSFX: sits at input-chain index 0, before the slider JSFX.
+-- Uses midirecv_buf to capture SysEx; forwards regular MIDI downstream via midisend.
+-- gmem layout (all addresses decimal):
+--   TX: [10000]=length (0=idle), [10001..10120]=bytes  (Lua→device)
+--   RX: [10200]=length (0=idle), [10201..10320]=bytes  (device→Lua)
+local SYSEX_JSFX_SRC = [[
+desc:MPKMiniMapper_SysEx
+options:gmem=MPKMiniMapper
+slider1:0<0,1,1>-Ready
+
+@init
+SBASE=10000; tbuf=2000;
+
+@block
+len=midirecv_buf(offset,tbuf,200);
+while(len)(
+  tbuf[0]==0xF0?(
+    gmem[SBASE+200]==0?(
+      i=0;while(i<len)(gmem[SBASE+201+i]=tbuf[i];i+=1;);
+      gmem[SBASE+200]=len;
+    );
+  ):len>=3?(
+    midisend(offset,tbuf[0],tbuf[1],tbuf[2]);
+  );
+  len=midirecv_buf(offset,tbuf,200);
+);
+gmem[SBASE+0]>0?(
+  slen=gmem[SBASE+0];
+  i=0;while(i<slen)(tbuf[i]=gmem[SBASE+1+i];i+=1;);
+  midisend_buf(0,tbuf,slen);
+  gmem[SBASE+0]=0;
+);
+slider1=1;
+]]
+
+local GMEM_SYSEX_TX     = 10000   -- TX slot: [10000]=len, [10001..10120]=bytes
+local GMEM_SYSEX_TX_BUF = 10001
+local GMEM_SYSEX_RX     = 10200   -- RX slot: [10200]=len, [10201..10320]=bytes
+local GMEM_SYSEX_RX_BUF = 10201
+local SYSEX_MAX_LEN     = 115
+
 local MIDI_TRACK_NAME = "MPKMiniMapper Input"
 
 local PLUGIN_NAME_TABLE = {
@@ -342,6 +383,10 @@ local S = {
   jsfx_ready        = false, -- true once JSFX helper is loaded and running
   jsfx_idx          = -1,    -- local input-chain index of the JSFX (for TrackFX_GetParam)
   jsfx_rp           = 0,     -- Lua-side read pointer into the slider ring buffer (0-7)
+  jsfx_sysex_idx    = -1,    -- input-chain index of the SysEx JSFX (always 0)
+  device_preset_bytes = nil,   -- raw bytes from last device read (table or nil)
+  device_preset_slot  = 1,     -- slot 1-4 to read/write
+  sysex_read_pending  = false, -- true while waiting for device response
   recsrc_target     = 0x1000, -- expected I_RECSRC value; re-applied if REAPER resets it
 
   knob_ccs          = {table.unpack(DEFAULT_KNOB_CCS)},
@@ -460,6 +505,7 @@ local function save_config()
     knob_ccs=S.knob_ccs, scrub_sensitivity=S.scrub_sensitivity,
     scrub_relative=S.scrub_relative,
     plugin_library=S.plugin_library, plugin_profiles=S.plugin_profiles,
+    device_preset_slot=S.device_preset_slot,
   }
   local f=io.open(path,"w")
   if f then f:write(json.encode(data)); f:close(); status("Saved: "..path)
@@ -483,6 +529,7 @@ local function load_config(path)
   if type(data.knob_ccs)=="table" then
     for i=1,8 do if data.knob_ccs[i] then S.knob_ccs[i]=data.knob_ccs[i] end end
   end
+  if data.device_preset_slot then S.device_preset_slot = data.device_preset_slot end
   status("Config loaded")
 end
 
@@ -915,6 +962,14 @@ local function find_mpk_mini()
   return -1,"MPK Mini not found"
 end
 
+local function find_mpk_mini_output()
+  for i=0,reaper.GetNumMIDIOutputs()-1 do
+    local _,name=reaper.GetMIDIOutputName(i,"")
+    if icontains(name,"mpk mini") or icontains(name,"mpkmini") then return i end
+  end
+  return -1
+end
+
 -- Write the embedded JSFX to %APPDATA%\REAPER\Effects\ (always overwrite so the
 -- latest version with the correct options:gmem declaration is always on disk).
 local function write_jsfx()
@@ -924,6 +979,13 @@ local function write_jsfx()
     status("Cannot write JSFX to: "..path); return false
   end
   f:write(JSFX_SRC); f:close(); return true
+end
+
+local function write_sysex_jsfx()
+  local path=reaper.GetResourcePath().."\\Effects\\MPKMiniMapper_SysEx.jsfx"
+  local f=io.open(path,"w")
+  if not f then status("Cannot write SysEx JSFX to: "..path); return false end
+  f:write(SYSEX_JSFX_SRC); f:close(); return true
 end
 
 -- Apply MIDI routing, arm, and monitor to a track.
@@ -941,6 +1003,11 @@ local function apply_midi_routing(t)
   reaper.SetMediaTrackInfo_Value(t,"I_RECSRC",recsrc)
   reaper.SetMediaTrackInfo_Value(t,"I_RECARM",1)
   reaper.SetMediaTrackInfo_Value(t,"I_RECMON",1)
+  -- Attempt to route MIDI output back to device (needed for SysEx TX)
+  local out=find_mpk_mini_output()
+  if out>=0 then
+    pcall(function() reaper.SetMediaTrackInfo_Value(t,"I_MIDI_OUTPUT",out) end)
+  end
 end
 
 -- Find or create the dedicated MIDI input track.
@@ -969,41 +1036,59 @@ local function ensure_midi_track()
   S.midi_track=t; return true
 end
 
--- Add the JSFX to the track's INPUT FX chain if not already there.
--- Stores the local input-chain index in S.jsfx_idx so Lua can read sliders.
--- If an old gmem-based version is found (< 26 params) it is removed and replaced.
+-- Manage BOTH JSFX and enforce order: SysEx=0, Slider=1.
 local function ensure_jsfx_on_track()
   if not S.midi_track then return false end
   if not reaper.ValidatePtr(S.midi_track,"MediaTrack*") then return false end
-  -- Search the input (record) FX chain for the JSFX
+
+  -- Scan the input FX chain and note positions of both JSFX
+  local sx_idx,sb_idx=-1,-1
   local i=0
   while true do
     local ok,name=reaper.TrackFX_GetFXName(S.midi_track,0x1000000|i,"")
     if not ok then break end
-    if name:find("MPKMiniMapper_MIDI",1,true) then
-      local n=reaper.TrackFX_GetNumParams(S.midi_track,0x1000000|i)
-      if n>=26 then S.jsfx_idx=i; return true end
-      -- Old version with fewer params — delete and re-add below
-      reaper.TrackFX_Delete(S.midi_track,0x1000000|i)
-      break
-    end
+    if name:find("MPKMiniMapper_SysEx",1,true) then sx_idx=i end
+    if name:find("MPKMiniMapper_MIDI",1,true)  then sb_idx=i end
     i=i+1
   end
-  -- Not found (or just deleted) — add to input FX chain
-  reaper.TrackFX_AddByName(S.midi_track,"MPKMiniMapper_MIDI",true,-1)
-  -- Scan again to find the new index (AddByName return value is ambiguous for recFX)
-  local j=0
-  while true do
-    local ok2,name2=reaper.TrackFX_GetFXName(S.midi_track,0x1000000|j,"")
-    if not ok2 then return false end
-    if name2:find("MPKMiniMapper_MIDI",1,true) then S.jsfx_idx=j; return true end
-    j=j+1
+
+  -- Happy path: both present in correct order with correct param count
+  if sx_idx==0 and sb_idx==1 then
+    local n=reaper.TrackFX_GetNumParams(S.midi_track,0x1000000|1)
+    if n>=26 then S.jsfx_sysex_idx=0; S.jsfx_idx=1; return true end
   end
+
+  -- Remove whichever exist (highest index first to avoid shifting)
+  local del={}
+  if sx_idx>=0 then del[#del+1]=sx_idx end
+  if sb_idx>=0 then del[#del+1]=sb_idx end
+  table.sort(del,function(a,b) return a>b end)
+  for _,idx in ipairs(del) do
+    reaper.TrackFX_Delete(S.midi_track,0x1000000|idx)
+  end
+
+  -- Re-add in correct order: SysEx first, then Slider
+  reaper.TrackFX_AddByName(S.midi_track,"MPKMiniMapper_SysEx",true,-1)
+  reaper.TrackFX_AddByName(S.midi_track,"MPKMiniMapper_MIDI",true,-1)
+
+  -- Scan to confirm positions
+  sx_idx=-1; sb_idx=-1; i=0
+  while true do
+    local ok,name=reaper.TrackFX_GetFXName(S.midi_track,0x1000000|i,"")
+    if not ok then break end
+    if name:find("MPKMiniMapper_SysEx",1,true) then sx_idx=i end
+    if name:find("MPKMiniMapper_MIDI",1,true)  then sb_idx=i end
+    i=i+1
+  end
+  if sx_idx<0 or sb_idx<0 then return false end
+  S.jsfx_sysex_idx=sx_idx; S.jsfx_idx=sb_idx
+  return true
 end
 
 -- Full MIDI bridge initialisation called from init()
 local function init_midi()
   if not write_jsfx() then return end
+  write_sysex_jsfx()  -- write even if it fails; ensure_jsfx_on_track will skip if absent
   if not ensure_midi_track() then
     status("Could not create MIDI input track"); return
   end
@@ -1015,6 +1100,83 @@ local function init_midi()
   S.jsfx_rp=0  -- reset ring buffer read pointer
   S.jsfx_ready=true
   status("MIDI bridge ready — route MPK Mini to '"..MIDI_TRACK_NAME.."' track")
+end
+
+-- ============================================================
+-- SYSEX — SEND / RECEIVE / PARSE
+-- Talks to MPK Mini MK3 onboard RAM via the SysEx JSFX bridge.
+-- Protocol: docs/MPK_MINI_MK3_SYSEX_PROTOCOL.md
+-- ============================================================
+
+local function send_sysex(bytes)
+  if not S.jsfx_ready then return false end
+  local n=#bytes
+  if n>SYSEX_MAX_LEN then return false end
+  if reaper.gmem_read(GMEM_SYSEX_TX)~=0 then return false end  -- TX slot busy
+  for i=1,n do reaper.gmem_write(GMEM_SYSEX_TX_BUF+(i-1),bytes[i]) end
+  reaper.gmem_write(GMEM_SYSEX_TX,n)
+  return true
+end
+
+local function read_device_preset(slot)
+  slot=math.max(1,math.min(4,slot or S.device_preset_slot))
+  S.device_preset_slot=slot
+  S.sysex_read_pending=true
+  local msg={0xF0,0x47,0x00,0x49,0x63,0x00,0x01,slot,0xF7}
+  if send_sysex(msg) then
+    status("Reading preset "..slot.." from device\xe2\x80\xa6")
+  else
+    status("Read failed: bridge not ready"); S.sysex_read_pending=false
+  end
+end
+
+-- Parse the 117-byte device response and update S.knob_ccs.
+-- Wire layout (1-based Lua): bytes[1]=F0 [2]=47 [3]=00 [4]=49 [5]=61 [6]=00 [7]=68
+--   [8]=preset_num [9..114]=106-byte payload [115]=F7
+-- Knob CC at payload offset 84 → bytes[9+84+(k-1)*3] for knob k
+local function apply_preset_bytes(bytes)
+  S.device_preset_bytes=bytes
+  local new_ccs={}
+  for k=1,8 do
+    local idx=9+84+(k-1)*3
+    local cc=bytes[idx]
+    new_ccs[k]=(cc and cc>=0 and cc<=127) and cc or S.knob_ccs[k]
+  end
+  S.knob_ccs=new_ccs
+  refresh_knob_labels(S.last_track)
+  status("Preset "..S.device_preset_slot.." read — CCs: "..table.concat(new_ccs,","))
+end
+
+local function poll_sysex_rx()
+  if not S.jsfx_ready then return end
+  local len=math.floor(reaper.gmem_read(GMEM_SYSEX_RX))
+  if len==0 then return end
+  local bytes={}
+  for i=0,len-1 do bytes[i+1]=math.floor(reaper.gmem_read(GMEM_SYSEX_RX_BUF+i)) end
+  reaper.gmem_write(GMEM_SYSEX_RX,0)  -- free slot
+  if bytes[1]==0xF0 and bytes[2]==0x47 and bytes[5]==0x61 then
+    S.sysex_read_pending=false
+    apply_preset_bytes(bytes)
+  end
+end
+
+local function write_device_preset(slot)
+  slot=math.max(1,math.min(4,slot or S.device_preset_slot))
+  if not S.device_preset_bytes then
+    status("Read a preset from device first"); return
+  end
+  local bytes={}
+  for i,b in ipairs(S.device_preset_bytes) do bytes[i]=b end
+  bytes[8]=slot
+  for k=1,8 do
+    local idx=9+84+(k-1)*3
+    if idx<=#bytes-1 then bytes[idx]=S.knob_ccs[k] end
+  end
+  if send_sysex(bytes) then
+    status("Knob CCs sent to device RAM (slot "..slot..")")
+  else
+    status("Send failed: bridge not ready")
+  end
 end
 
 -- ============================================================
@@ -1771,6 +1933,42 @@ local function draw_presets(x,y,w,h)
     local ok,path=reaper.GetUserFileNameForRead("","Load Config","json")
     if ok then load_config(path) end
   end
+
+  -- ── MPK Mini Device RAM ──
+  local dy=y+102
+  set_col(CBR); gfx.line(x+6,dy,x+w-6,dy,0); dy=dy+10
+  draw_str(x+6,dy,"MPK Mini — Device RAM",CT,FONT_BOLD); dy=dy+24
+
+  -- Slot selector 1–4
+  draw_str(x+6,dy,"Slot:",CD,FONT_SMALL)
+  local sw2=math.floor((w-54)/4)
+  for s=1,4 do
+    local sx2=x+40+(s-1)*(sw2+3)
+    local sc=S.device_preset_slot==s and CA or nil
+    if btn(sx2,dy-2,sw2,18,tostring(s),sc) then S.device_preset_slot=s end
+  end
+  dy=dy+28
+
+  -- Read / Send buttons
+  local bw2=math.floor((w-16)/2)
+  local rlbl=S.sysex_read_pending and "Reading\xe2\x80\xa6" or "Read from Device"
+  if btn(x+6,dy,bw2,22,rlbl,S.sysex_read_pending and CA or nil) then
+    if not S.sysex_read_pending then read_device_preset(S.device_preset_slot) end
+  end
+  local can_send=S.device_preset_bytes~=nil
+  local sdim=can_send and nil or {0.22,0.22,0.27}
+  if btn(x+10+bw2,dy,bw2,22,"Send to Device",sdim) then
+    if can_send then write_device_preset(S.device_preset_slot) end
+  end
+  dy=dy+30
+
+  -- Status / cache info
+  if S.device_preset_bytes then
+    draw_str(x+6,dy,"Cached: slot "..S.device_preset_slot.."  — CCs: "..
+      table.concat(S.knob_ccs,","),COK,FONT_SMALL)
+  else
+    draw_str(x+6,dy,"No cache — click Read to load from device",CD,FONT_SMALL)
+  end
 end
 
 -- ============================================================
@@ -1914,6 +2112,7 @@ local function main_loop()
   end
 
   poll_midi_slider(track)
+  poll_sysex_rx()
 
   if S.window_open then draw_ui() end
 
