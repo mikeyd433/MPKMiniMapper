@@ -338,10 +338,13 @@ local S = {
   },
 
   -- New-bank creation form state
-  new_bank_form  = false,
-  new_bank_name  = "",
-  new_bank_cat   = "Reverb",
-  preset_scroll  = 0,
+  new_bank_form          = false,
+  new_bank_name          = "",
+  new_bank_cat           = "Reverb",
+  new_bank_mode          = "category",  -- "category" or "plugin"
+  new_bank_plugin        = "",          -- selected plugin name when mode=="plugin"
+  new_bank_plugin_scroll = 0,
+  preset_scroll          = 0,
 
   -- Auto-save: mark dirty on any change; write at most every 2 s
   config_dirty      = false,
@@ -462,7 +465,8 @@ local function save_config()
   local bd_out={}
   for i=1,MAX_BANKS do
     local b=S.bank_defs[i]
-    if b then bd_out[i]={name=b.name, category=b.category, color=b.color}
+    if b then bd_out[i]={name=b.name, category=b.category, color=b.color,
+                          pinned_plugin=b.pinned_plugin}
     else bd_out[i]=false end
   end
   local data = {
@@ -502,7 +506,8 @@ local function load_config(path)
       local b=data.bank_defs[i]
       if type(b)=="table" and type(b.name)=="string" then
         S.bank_defs[i]={name=b.name, category=b.category,
-          color=(type(b.color)=="table" and b.color or {0.5,0.5,0.5})}
+          color=(type(b.color)=="table" and b.color or {0.5,0.5,0.5}),
+          pinned_plugin=(type(b.pinned_plugin)=="string" and b.pinned_plugin or nil)}
       else
         S.bank_defs[i]=nil
       end
@@ -565,6 +570,20 @@ local function find_fx(track,category)
     if lib_entry(name,track,i).confirmed==category then return i,name end
   end
   return nil,nil
+end
+
+-- Like find_fx but respects a bank's pinned_plugin field:
+-- if set, match by exact plugin name; otherwise fall back to category search.
+local function find_fx_for_bank(track,bdef)
+  if not track or not bdef then return nil,nil end
+  if bdef.pinned_plugin then
+    for i=0,reaper.TrackFX_GetCount(track)-1 do
+      local _,raw=reaper.TrackFX_GetFXName(track,i,"")
+      if strip_prefix(raw)==bdef.pinned_plugin then return i,bdef.pinned_plugin end
+    end
+    return nil,nil
+  end
+  return find_fx(track,bdef.category)
 end
 
 -- ============================================================
@@ -882,8 +901,9 @@ end
 
 local function plugin_bank_apply(knob,cc_val,track,bank_id)
   if not track then return end
-  local cat=S.bank_defs[bank_id] and S.bank_defs[bank_id].category; if not cat then return end
-  local fx,pname=find_fx(track,cat); if not fx then return end
+  local bdef_ba=S.bank_defs[bank_id]; if not bdef_ba or not bdef_ba.category then return end
+  local fx,pname=find_fx_for_bank(track,bdef_ba); if not fx then return end
+  local cat=bdef_ba.category
   local profile=get_profile(pname,bank_id,track,fx)
   -- Ensure knob_defaults exists (profiles loaded from older config files may be missing it)
   if not profile.knob_defaults then profile.knob_defaults={0,0,0,0,0,0,0,0} end
@@ -938,8 +958,8 @@ end
 
 local function plugin_bank_reset(knob,track,bank_id)
   if not track then return end
-  local cat=S.bank_defs[bank_id] and S.bank_defs[bank_id].category; if not cat then return end
-  local fx,pname=find_fx(track,cat); if not fx then return end
+  local bdef_br=S.bank_defs[bank_id]; if not bdef_br or not bdef_br.category then return end
+  local fx,pname=find_fx_for_bank(track,bdef_br); if not fx then return end
   local profile=get_profile(pname,bank_id,track,fx)
   local param=profile.knob_params[knob]; if param<0 then return end
   local def=profile.knob_defaults and profile.knob_defaults[knob] or 0
@@ -1046,8 +1066,8 @@ local function refresh_knob_labels(track)
     end
   else
     for k=1,8 do S.knob_labels[k]="—"; S.knob_active[k]=false end
-    if track and bcat then
-      local fx,pname=find_fx(track,bcat)
+    if track and bdef then
+      local fx,pname=find_fx_for_bank(track,bdef)
       if fx then
         local profile=get_profile(pname,bank,track,fx)
         for k=1,8 do
@@ -1328,7 +1348,7 @@ build_param_cache = function(knob)
     elseif knob==7 then fx=find_fx(track,"Delay")
     else return end
   elseif bcat then
-    fx=find_fx(track,bcat)
+    fx=find_fx_for_bank(track,S.bank_defs[bank])
   end
   if not fx then return end
   S.param_cache[1]={idx=-1, name="\xe2\x80\x94 None \xe2\x80\x94"}
@@ -1511,8 +1531,8 @@ local function get_knob_value_str(k)
     end
     return nil
   else
-    local bcat_vs=S.bank_defs[bank] and S.bank_defs[bank].category; if not bcat_vs then return nil end
-    local fx,pn=find_fx(track,bcat_vs); if not fx then return nil end
+    local bdef_vs=S.bank_defs[bank]; if not bdef_vs or not bdef_vs.category then return nil end
+    local fx,pn=find_fx_for_bank(track,bdef_vs); if not fx then return nil end
     local profile=get_profile(pn,bank,track,fx)
     local pi=profile.knob_params[k]; if not pi or pi<0 then return nil end
     return string.format("%.0f%%",reaper.TrackFX_GetParamNormalized(track,fx,pi)*100)
@@ -1585,8 +1605,8 @@ local function get_knob_value_norm(k)
     end
     return nil
   else
-    local bcat_vn=S.bank_defs[bank] and S.bank_defs[bank].category; if not bcat_vn then return nil end
-    local fx,pname=find_fx(track,bcat_vn)
+    local bdef_vn=S.bank_defs[bank]; if not bdef_vn or not bdef_vn.category then return nil end
+    local fx,pname=find_fx_for_bank(track,bdef_vn)
     if not fx then return nil end
     local profile=get_profile(pname,bank,track,fx)
     local pi=profile.knob_params[k]; if not pi or pi<0 then return nil end
@@ -1708,7 +1728,7 @@ local function draw_bank_dots(x,y)
       local col=bdef_d.color or {0.5,0.5,0.5}
       local cat=bdef_d.category
       local has=(b==BANK_FOLLOW and track~=nil) or
-                (track and cat and find_fx(track,cat)~=nil)
+                (track and (cat or bdef_d.pinned_plugin) and find_fx_for_bank(track,bdef_d)~=nil)
       if has then set_col(col); gfx.circle(cx,cy,r,1,1)
       else set_col(col,0.3); gfx.circle(cx,cy,r,0,1) end
       if b==S.active_bank then set_col(CT); gfx.circle(cx,cy,r+2,0,1) end
@@ -1796,6 +1816,46 @@ end
 -- ============================================================
 
 local HW_PW=66; local HW_PH=54; local HW_KW=66; local HW_KH=64; local HW_G=8
+local HW_EW=66; local HW_EH=40  -- extra-bank tile size (shorter than physical pads)
+
+-- Draw user-created banks beyond slot 8 as a flowing grid below the physical pads.
+-- Returns the total height used (0 if no extra banks).
+local function draw_extra_banks(bx,by)
+  local track=S.last_track; local cols=4
+  local extra={}
+  for i=9,MAX_BANKS do if S.bank_defs[i] then extra[#extra+1]=i end end
+  if #extra==0 then return 0 end
+
+  local label_h=14; local row_h=HW_EH+HW_G
+  local total_h=label_h+math.ceil(#extra/cols)*row_h
+
+  -- Section label
+  draw_str(bx,by+2,"More Banks",CD,FONT_SMALL)
+  local ey=by+label_h
+
+  for idx,slot in ipairs(extra) do
+    local bdef_e=S.bank_defs[slot]
+    local row_i=math.ceil(idx/cols)-1
+    local col_i=(idx-1)%cols
+    local ex=bx+col_i*(HW_EW+HW_G); local ey2=ey+row_i*row_h
+    local sel=(S.active_bank==slot)
+    local col_e=bdef_e.color or {0.5,0.5,0.5}
+    fill_rect(ex,ey2,HW_EW,HW_EH,col_e,sel and 1.0 or 0.55)
+    stroke_rect(ex,ey2,HW_EW,HW_EH,sel and CT or CBR)
+    -- Slot number dimmed in corner
+    draw_str(ex+3,ey2+2,tostring(slot),{0,0,0,0.7},FONT_SMALL)
+    -- Bank name centered
+    draw_strc(ex,ey2+math.floor((HW_EH-11)/2),HW_EW,bdef_e.name:sub(1,7),{0,0,0},FONT_SMALL)
+    if clicked(ex,ey2,HW_EW,HW_EH) then
+      S.selected_pad=nil; S.selected_knob=nil; S.dropdown_open=nil
+      S.active_bank=slot
+      reset_knob_engagement()
+      refresh_knob_labels(track)
+      status("Bank: "..(bdef_e.name or ""))
+    end
+  end
+  return total_h
+end
 
 local function draw_pads(bx,by)
   local track=S.last_track
@@ -2111,8 +2171,9 @@ local function draw_presets(x,y,w,h)
   fill_rect(x,y,w,h,CP); stroke_rect(x,y,w,h,CBR)
   draw_str(x+6,y+8,"Preset Banks",CT,FONT_BOLD)
 
-  -- Fixed footer height for new-bank button/form
-  local footer_h = S.new_bank_form and 120 or 32
+  -- Footer height: larger in plugin mode to fit the library picker
+  local footer_h = S.new_bank_form and
+                   (S.new_bank_mode=="plugin" and 190 or 140) or 32
   local header_h = 26
 
   -- Grid tile layout
@@ -2178,8 +2239,13 @@ local function draw_presets(x,y,w,h)
       -- Bank name
       draw_str(tx+8,ty+16,bdef.name:sub(1,12),CT,FONT_NORMAL)
 
-      -- Category or "Follow Track"
-      local cat_label=bdef.category or "Follow Track"
+      -- Category / pinned plugin / Follow Track label
+      local cat_label
+      if bdef.pinned_plugin then
+        cat_label="* "..bdef.pinned_plugin:sub(1,11)
+      else
+        cat_label=bdef.category or "Follow Track"
+      end
       draw_str(tx+8,ty+33,cat_label,CD,FONT_SMALL)
 
       -- Delete button top-right (slot 1 immune)
@@ -2220,28 +2286,90 @@ local function draw_presets(x,y,w,h)
     -- Inline creation form
     draw_str(x+6,fy+2,"New Bank",CA,FONT_SMALL); fy=fy+20
 
+    -- Name field
     draw_str(x+6,fy+3,"Name:",CD,FONT_SMALL)
     ti_field(x+46,fy,w-52,18,"new_bank_name",S.new_bank_name,function(v)
       S.new_bank_name=v
     end)
     fy=fy+24
 
-    draw_str(x+6,fy+3,"Type:",CD,FONT_SMALL)
-    local cat_idx=1
-    for i,c in ipairs(BANK_CATS) do if c==S.new_bank_cat then cat_idx=i; break end end
-    if btn(x+46,fy,w-52,18,S.new_bank_cat.." \xe2\x96\xba") then
-      cat_idx=(cat_idx%#BANK_CATS)+1; S.new_bank_cat=BANK_CATS[cat_idx]
+    -- Mode toggle: Category vs Plugin
+    local mode_col_c=(S.new_bank_mode=="category") and CA or nil
+    local mode_col_p=(S.new_bank_mode=="plugin")   and CA or nil
+    local hw_mode=math.floor((w-14)/2)
+    if btn(x+6,fy,hw_mode,18,"Category",mode_col_c) then S.new_bank_mode="category" end
+    if btn(x+8+hw_mode,fy,hw_mode,18,"Plugin",mode_col_p) then
+      S.new_bank_mode="plugin"; S.new_bank_plugin_scroll=0
     end
-    fy=fy+24
+    fy=fy+22
+
+    if S.new_bank_mode=="category" then
+      -- Category cycle button
+      draw_str(x+6,fy+3,"Type:",CD,FONT_SMALL)
+      local cat_idx=1
+      for i,c in ipairs(BANK_CATS) do if c==S.new_bank_cat then cat_idx=i; break end end
+      if btn(x+46,fy,w-52,18,S.new_bank_cat.." \xe2\x96\xba") then
+        cat_idx=(cat_idx%#BANK_CATS)+1; S.new_bank_cat=BANK_CATS[cat_idx]
+      end
+      fy=fy+24
+    else
+      -- Plugin picker: scrollable list from library
+      local plugins={}
+      for pname,e in pairs(S.plugin_library) do
+        plugins[#plugins+1]={name=pname, cat=e.confirmed or e.guessed or "Unknown"}
+      end
+      table.sort(plugins,function(a,b) return a.name<b.name end)
+      local list_h=math.min(#plugins,4)*18; if list_h==0 then list_h=18 end
+      local max_pscroll=math.max(0,#plugins-4)
+      if hov(x+6,fy,w-12,list_h) then
+        local wheel=gfx.mouse_wheel-S.prev_mouse_wheel
+        if wheel~=0 then
+          S.new_bank_plugin_scroll=clamp(
+            S.new_bank_plugin_scroll-math.floor(wheel/120),0,max_pscroll)
+        end
+      end
+      fill_rect(x+6,fy,w-12,list_h,CB); stroke_rect(x+6,fy,w-12,list_h,CBR)
+      if #plugins==0 then
+        draw_str(x+10,fy+3,"No plugins in library",CD,FONT_SMALL)
+      else
+        for i=1,math.min(4,#plugins) do
+          local p=plugins[i+S.new_bank_plugin_scroll]
+          if not p then break end
+          local py=fy+(i-1)*18
+          local sel=(S.new_bank_plugin==p.name)
+          if sel then fill_rect(x+6,py,w-12,18,{0.15,0.28,0.45}) end
+          draw_str(x+10,py+3,p.name:sub(1,20),sel and CT or CD,FONT_SMALL)
+          if clicked(x+6,py,w-12,18) then
+            S.new_bank_plugin=p.name
+            -- auto-set category from confirmed library entry
+            local e=S.plugin_library[p.name]
+            if e and e.confirmed and e.confirmed~="Unknown" then
+              S.new_bank_cat=e.confirmed
+            end
+          end
+        end
+      end
+      fy=fy+list_h+4
+      if S.new_bank_plugin~="" then
+        draw_str(x+6,fy+2,"\xe2\x86\x92 "..S.new_bank_plugin:sub(1,22),CA,FONT_SMALL)
+      else
+        draw_str(x+6,fy+2,"Pick a plugin above",CD,FONT_SMALL)
+      end
+      fy=fy+18
+    end
 
     local hw2=math.floor((w-14)/2)
-    if btn(x+6,fy,hw2,22,"Create",{0.20,0.45,0.20}) then
-      local name=(S.new_bank_name~="" and S.new_bank_name or S.new_bank_cat)
+    local can_create=(S.new_bank_mode=="category") or (S.new_bank_plugin~="")
+    if btn(x+6,fy,hw2,22,"Create",can_create and {0.20,0.45,0.20} or {0.28,0.28,0.30}) and can_create then
+      local name=(S.new_bank_name~="" and S.new_bank_name or
+                  (S.new_bank_mode=="plugin" and S.new_bank_plugin or S.new_bank_cat))
       local slot=nil
       for i=2,MAX_BANKS do if not S.bank_defs[i] then slot=i; break end end
       if slot then
         local pal_idx=((slot-2)%#BANK_PALETTE)+1
-        S.bank_defs[slot]={name=name, category=S.new_bank_cat, color=BANK_PALETTE[pal_idx]}
+        local pinned=(S.new_bank_mode=="plugin" and S.new_bank_plugin~="") and S.new_bank_plugin or nil
+        S.bank_defs[slot]={name=name, category=S.new_bank_cat,
+                            color=BANK_PALETTE[pal_idx], pinned_plugin=pinned}
         S.config_dirty=true
         status("Bank "..slot..": "..name.." ("..S.new_bank_cat..")")
       end
@@ -2289,6 +2417,8 @@ local function draw_setup()
   local hw_x,hw_y=8,70
   local pads_total_w=4*(HW_PW+HW_G)-HW_G
   draw_pads(hw_x,hw_y)
+  local pads_h=2*(HW_PH+HW_G)-HW_G
+  local extra_h=draw_extra_banks(hw_x,hw_y+pads_h+HW_G)
   draw_knobs(hw_x+pads_total_w+24,hw_y)
 
   local panel_x=hw_x+pads_total_w+24+4*(HW_KW+HW_G)-HW_G+14
