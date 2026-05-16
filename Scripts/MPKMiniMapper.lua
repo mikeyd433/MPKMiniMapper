@@ -1905,9 +1905,9 @@ local function draw_param_panel(x,y,w,h)
   end
 
   -- Min/Max range sliders
+  local rslw=math.floor((w-60)/2)-4
   local sy=y+138
   draw_str(x+6,sy,"Min:",CD,FONT_SMALL)
-  local rslw=math.floor((w-60)/2)-4
   if profile then
     profile.knob_min[k]=hslider(x+38,sy,rslw,14,profile.knob_min[k] or 0,{0.4,0.5,0.8})
     draw_str(x+42+rslw,sy,"Max:",CD,FONT_SMALL)
@@ -1924,23 +1924,26 @@ local function draw_param_panel(x,y,w,h)
     if rel then draw_str(x+112,sy2+2,"(uses CC delta)",CD,FONT_SMALL) end
   end
 
+  -- Sequential layout for the remaining action rows (avoids overlap)
+  local cy=sy2+28
+
   -- Unconfirmed profile warning + Confirm button
   if profile and not profile.confirmed then
-    local wy=y+190
-    fill_rect(x+6,wy,w-12,20,CWN,0.25)
-    draw_str(x+10,wy+2,"Auto-assigned — review & confirm",CWN,FONT_SMALL)
-    if btn(x+w-72,wy,66,20,"Confirm",COK) then
+    fill_rect(x+6,cy,w-12,20,CWN,0.25)
+    draw_str(x+10,cy+2,"Auto-assigned — review & confirm",CWN,FONT_SMALL)
+    if btn(x+w-72,cy,66,20,"Confirm",COK) then
       profile.confirmed=true; status("Profile confirmed")
     end
+    cy=cy+26
   end
 
   -- Reset to default button (not for K5 scrub in Bank 1)
   local no_reset=(S.active_bank==BANK_FOLLOW and k==5)
   if not no_reset then
-    local ry2=profile and (profile.confirmed and y+190 or y+216) or y+190
-    if btn(x+6,ry2,120,22,"Reset to Default",CRST) then
+    if btn(x+6,cy,120,22,"Reset to Default",CRST) then
       reset_knob(k,S.last_track)
     end
+    cy=cy+28
   end
 
   -- Re-fill: re-run keyword matching against the plugin for plugin banks only.
@@ -1949,8 +1952,7 @@ local function draw_param_panel(x,y,w,h)
   if cat and S.last_track and profile then
     local rfx,rpname=find_fx(S.last_track,cat)
     if rfx then
-      local rfy=y+h-30
-      if btn(x+6,rfy,w-12,22,"Re-auto-fill all knobs") then
+      if btn(x+6,cy,w-12,22,"Re-auto-fill all knobs") then
         autofill_params(profile,S.last_track,rfx,cat)
         profile.confirmed=false
         refresh_knob_labels(S.last_track)
@@ -2301,7 +2303,7 @@ local function draw_setup()
 
   local panel_x=hw_x+pads_total_w+24+4*(HW_KW+HW_G)-HW_G+14
   local panel_w=gfx.w-panel_x-6
-  local panel_h=math.max(230,2*(HW_PH+HW_G)+10)
+  local panel_h=math.max(300,2*(HW_PH+HW_G)+10)
 
   if S.selected_knob then draw_param_panel(panel_x,hw_y,panel_w,panel_h)
   elseif S.selected_pad then draw_pad_panel(panel_x,hw_y,panel_w,panel_h)
