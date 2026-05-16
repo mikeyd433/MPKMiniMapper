@@ -952,16 +952,19 @@ local function ensure_midi_track()
   S.midi_track=t; return true
 end
 
--- Add the JSFX to the track's INPUT FX chain if not already there.
--- recFX=true means the input/record FX chain in TrackFX API calls.
+-- Add the JSFX to the track's INPUT FX chain, always removing any existing
+-- instance first so REAPER reloads the freshly-written file from disk.
+-- Without the forced reload, REAPER keeps the cached old JSFX in memory
+-- even after write_jsfx() has updated the file, causing a gmem mismatch.
 local function ensure_jsfx_on_track()
   if not S.midi_track then return false end
   if not reaper.ValidatePtr(S.midi_track,"MediaTrack*") then return false end
-  -- TrackFX_GetByName with recFX=true searches the input FX chain
-  if reaper.TrackFX_GetByName(S.midi_track,"MPKMiniMapper_MIDI",true)>=0 then
-    return true  -- already present
+  -- Remove any existing instance (0x1000000 offset = input FX chain index)
+  local existing=reaper.TrackFX_GetByName(S.midi_track,"MPKMiniMapper_MIDI",true)
+  if existing>=0 then
+    reaper.TrackFX_Delete(S.midi_track,0x1000000+existing)
   end
-  -- -1 = add new instance; true = input FX chain
+  -- Add fresh from disk; true = input FX chain, -1 = append
   local idx=reaper.TrackFX_AddByName(S.midi_track,"MPKMiniMapper_MIDI",true,-1)
   return idx>=0
 end
@@ -2050,29 +2053,38 @@ end
 -- ============================================================
 
 local function main_loop()
-  local ch=gfx.getchar()
+  local ok, err = pcall(function()
+    local ch=gfx.getchar()
 
-  -- Text input widget consumes keypresses first
-  local consumed=ti_handle(ch)
+    -- Text input widget consumes keypresses first
+    local consumed=ti_handle(ch)
 
-  if not consumed then
-    if ch==-1 then S.window_open=false end
-    if ch==27 then gfx.quit(); S.window_open=false end
+    if not consumed then
+      if ch==-1 then S.window_open=false end
+      if ch==27 then gfx.quit(); S.window_open=false end
+    end
+    if S.window_open and gfx.w==0 then S.window_open=false end
+
+    check_project_change()
+    local track=update_track()
+
+    -- Show first-time drum plugin prompt
+    if S.pending_drum_prompt then
+      status("New drum plugin '"..S.pending_drum_prompt.."' — map pads in Setup → Pad panel")
+      S.pending_drum_prompt=nil
+    end
+
+    poll_midi_gmem(track)
+
+    if S.window_open then draw_ui() end
+  end)
+
+  if not ok then
+    -- Surface runtime errors in the status bar and REAPER console instead of
+    -- silently freezing the window (which happens when defer throws an error).
+    reaper.ShowConsoleMsg("MPKMiniMapper error: "..tostring(err).."\n")
+    status("Error: "..tostring(err):match("[^:]+$"):gsub("^%s+",""))
   end
-  if S.window_open and gfx.w==0 then S.window_open=false end
-
-  check_project_change()
-  local track=update_track()
-
-  -- Show first-time drum plugin prompt
-  if S.pending_drum_prompt then
-    status("New drum plugin '"..S.pending_drum_prompt.."' — map pads in Setup → Pad panel")
-    S.pending_drum_prompt=nil
-  end
-
-  poll_midi_gmem(track)
-
-  if S.window_open then draw_ui() end
 
   reaper.defer(main_loop)
 end
