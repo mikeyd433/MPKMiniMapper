@@ -1066,6 +1066,7 @@ local function ensure_jsfx_on_track()
     reaper.TrackFX_Delete(S.midi_track,0x1000000+existing)
   end
   local idx=reaper.TrackFX_AddByName(S.midi_track,"MPKMiniMapper_MIDI",true,-1)
+  if idx>=0 then S.jsfx_idx=idx end
   return idx>=0
 end
 
