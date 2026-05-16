@@ -1363,14 +1363,15 @@ end
 local function knob_context(knob)
   local track=S.last_track; if not track then return nil,nil,nil end
   local bank=S.active_bank
-  local bcat=S.bank_defs[bank] and S.bank_defs[bank].category
+  local bdef_kc=S.bank_defs[bank]
+  local bcat=bdef_kc and bdef_kc.category
   local fx,pname
   if bank==BANK_FOLLOW then
     if knob==6 then fx,pname=find_fx(track,"Reverb")
     elseif knob==7 then fx,pname=find_fx(track,"Delay")
     else return nil,nil,nil end
   elseif bcat then
-    fx,pname=find_fx(track,bcat)
+    fx,pname=find_fx_for_bank(track,bdef_kc)
   end
   if not (fx and pname) then return nil,nil,nil end
   return get_profile(pname,bank,track,fx),fx,track
@@ -2006,9 +2007,10 @@ local function draw_param_panel(x,y,w,h)
 
   -- Re-fill: re-run keyword matching against the plugin for plugin banks only.
   -- Useful when auto-fill ran before the synonym list was complete (e.g. Lo Cut / Hi Cut).
-  local cat=S.bank_defs[S.active_bank] and S.bank_defs[S.active_bank].category
+  local bdef_rf=S.bank_defs[S.active_bank]
+  local cat=bdef_rf and bdef_rf.category
   if cat and S.last_track and profile then
-    local rfx,rpname=find_fx(S.last_track,cat)
+    local rfx,rpname=find_fx_for_bank(S.last_track,bdef_rf)
     if rfx then
       if btn(x+6,cy,w-12,22,"Re-auto-fill all knobs") then
         autofill_params(profile,S.last_track,rfx,cat)
