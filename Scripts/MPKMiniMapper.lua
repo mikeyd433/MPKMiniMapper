@@ -974,6 +974,7 @@ local function init_midi()
   if not ensure_jsfx_on_track() then
     status("Could not add JSFX — verify REAPER Effects folder is writable"); return
   end
+  reaper.gmem_attach("MPKMiniMapper")  -- must be called before any gmem_read/write
   S.jsfx_ready=true
   status("MIDI bridge ready — route MPK Mini to '"..MIDI_TRACK_NAME.."' track")
 end
@@ -990,7 +991,7 @@ local function send_sysex(bytes)
   if not S.jsfx_ready then return false end
   local n = #bytes
   if n > SYSEX_MAX_LEN then return false end
-  if reaper.gmem_read(GMEM_SYSEX_TX) ~= 0 then return false end  -- slot busy
+  if (reaper.gmem_read(GMEM_SYSEX_TX) or 0) ~= 0 then return false end  -- slot busy
   for i = 1, n do
     reaper.gmem_write(GMEM_SYSEX_TX_BUF + (i-1), bytes[i])
   end
@@ -1120,12 +1121,12 @@ end
 -- Called every defer frame from poll_midi_gmem.
 local function poll_sysex_rx()
   if not S.jsfx_ready then return end
-  local len = math.floor(reaper.gmem_read(GMEM_SYSEX_RX))
+  local len = math.floor(reaper.gmem_read(GMEM_SYSEX_RX) or 0)
   if len == 0 then return end
   -- Read the bytes out
   local bytes = {}
   for i = 0, len-1 do
-    bytes[i+1] = math.floor(reaper.gmem_read(GMEM_SYSEX_RX_BUF + i))
+    bytes[i+1] = math.floor(reaper.gmem_read(GMEM_SYSEX_RX_BUF + i) or 0)
   end
   reaper.gmem_write(GMEM_SYSEX_RX, 0)  -- free the slot immediately
   -- Validate: F0 47 00 49 61 … (preset dump response)
@@ -1239,13 +1240,13 @@ local function poll_midi_gmem(track)
   reaper.gmem_write(GMEM_BASE + 2, drum_mode)
   poll_sysex_rx()
   -- Drain the ring buffer
-  local rp = math.floor(reaper.gmem_read(GMEM_BASE + 1))
-  local wp = math.floor(reaper.gmem_read(GMEM_BASE + 0))
+  local rp = math.floor(reaper.gmem_read(GMEM_BASE + 1) or GMEM_BUF)
+  local wp = math.floor(reaper.gmem_read(GMEM_BASE + 0) or GMEM_BUF)
   local iter = 0
   while rp ~= wp and iter < 200 do
-    local m1 = math.floor(reaper.gmem_read(rp))
-    local m2 = math.floor(reaper.gmem_read(rp + 1))
-    local m3 = math.floor(reaper.gmem_read(rp + 2))
+    local m1 = math.floor(reaper.gmem_read(rp) or 0)
+    local m2 = math.floor(reaper.gmem_read(rp + 1) or 0)
+    local m3 = math.floor(reaper.gmem_read(rp + 2) or 0)
     process_midi_event(m1, m2, m3, track)
     rp = rp + 3
     if rp >= GMEM_BUF + GMEM_BSIZ then rp = GMEM_BUF end
