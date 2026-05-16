@@ -118,7 +118,8 @@ end
 local SCRIPT_NAME = "MPKMiniMapper"
 local VERSION     = "1.2"
 
-local BANK_FOLLOW = 1  -- Slot 1 is always the Follow Selected Track bank
+local BANK_FOLLOW = 1   -- Slot 1 is always the Follow Selected Track bank
+local MAX_BANKS   = 32  -- Maximum number of bank slots (slots 2-32 are user-created)
 
 local DEFAULT_KNOB_CCS = {70,71,72,73,74,75,76,77}
 
@@ -337,9 +338,10 @@ local S = {
   },
 
   -- New-bank creation form state
-  new_bank_form = false,
-  new_bank_name = "",
-  new_bank_cat  = "Reverb",
+  new_bank_form  = false,
+  new_bank_name  = "",
+  new_bank_cat   = "Reverb",
+  preset_scroll  = 0,
 
   -- Auto-save: mark dirty on any change; write at most every 2 s
   config_dirty      = false,
@@ -456,9 +458,9 @@ end
 local function save_config()
   local path = config_path()
   if not path then status("Save failed: no project open"); return end
-  -- Serialize bank_defs as an array (indices 1-8, nil = empty slot stored as false sentinel)
+  -- Serialize bank_defs as an array (indices 1-MAX_BANKS, nil = empty slot stored as false sentinel)
   local bd_out={}
-  for i=1,8 do
+  for i=1,MAX_BANKS do
     local b=S.bank_defs[i]
     if b then bd_out[i]={name=b.name, category=b.category, color=b.color}
     else bd_out[i]=false end
@@ -496,7 +498,7 @@ local function load_config(path)
   end
   -- Load bank_defs: slot 1 is always overwritten with the protected Follow Track entry
   if type(data.bank_defs)=="table" then
-    for i=2,8 do
+    for i=2,MAX_BANKS do
       local b=data.bank_defs[i]
       if type(b)=="table" and type(b.name)=="string" then
         S.bank_defs[i]={name=b.name, category=b.category,
@@ -951,7 +953,7 @@ end
 
 -- Returns the first bank slot with category "Drums", or 8 as fallback
 local function find_drums_bank_slot()
-  for i=1,8 do
+  for i=1,MAX_BANKS do
     if S.bank_defs[i] and S.bank_defs[i].category=="Drums" then return i end
   end
   return 8
@@ -1696,22 +1698,29 @@ end
 -- ============================================================
 
 local function draw_bank_dots(x,y)
-  local r=10; local gap=28; local track=S.last_track
-  for b=1,8 do
-    local bdef_d=S.bank_defs[b]; if not bdef_d then break end
-    local cx=x+(b-1)*gap+r; local col=bdef_d.color or {0.5,0.5,0.5}
-    local cat=bdef_d.category
-    local has=(b==BANK_FOLLOW and track~=nil) or
-              (track and cat and find_fx(track,cat)~=nil)
-    if has then set_col(col); gfx.circle(cx,y,r,1,1)
-    else set_col(col,0.3); gfx.circle(cx,y,r,0,1) end
-    if b==S.active_bank then set_col(CT); gfx.circle(cx,y,r+2,0,1) end
-    if clicked(cx-r,y-r,r*2+1,r*2+1) then
-      S.active_bank=b
-      reset_knob_engagement()
-      refresh_knob_labels(S.last_track)
-      status("Bank: "..(bdef_d.name or ""))
+  local r=10; local gap=28; local track=S.last_track; local per_row=8
+  local b=1
+  while b<=MAX_BANKS do
+    local bdef_d=S.bank_defs[b]
+    if bdef_d then
+      local col_i=(b-1)%per_row; local row_i=math.floor((b-1)/per_row)
+      local cx=x+col_i*gap+r; local cy=y+row_i*(r*2+6)
+      local col=bdef_d.color or {0.5,0.5,0.5}
+      local cat=bdef_d.category
+      local has=(b==BANK_FOLLOW and track~=nil) or
+                (track and cat and find_fx(track,cat)~=nil)
+      if has then set_col(col); gfx.circle(cx,cy,r,1,1)
+      else set_col(col,0.3); gfx.circle(cx,cy,r,0,1) end
+      if b==S.active_bank then set_col(CT); gfx.circle(cx,cy,r+2,0,1) end
+      if clicked(cx-r,cy-r,r*2+1,r*2+1) then
+        S.active_bank=b
+        reset_knob_engagement()
+        refresh_knob_labels(S.last_track)
+        status("Bank: "..(bdef_d.name or ""))
+      end
     end
+    b=b+1
+    if b>MAX_BANKS then break end
   end
 end
 
@@ -2102,89 +2111,135 @@ local function draw_presets(x,y,w,h)
   fill_rect(x,y,w,h,CP); stroke_rect(x,y,w,h,CBR)
   draw_str(x+6,y+8,"Preset Banks",CT,FONT_BOLD)
 
-  local dy=y+30
-  local rh=26; local del_w=22
+  -- Fixed footer height for new-bank button/form
+  local footer_h = S.new_bank_form and 120 or 32
+  local header_h = 26
 
-  for slot=1,8 do
+  -- Grid tile layout
+  local pad=6; local cols=2; local gap=4
+  local tile_w=math.floor((w-pad*2-gap*(cols-1))/cols)
+  local tile_h=50
+
+  -- Collect occupied slots in order
+  local slots={}
+  for i=1,MAX_BANKS do if S.bank_defs[i] then slots[#slots+1]=i end end
+  local rows=math.ceil(#slots/cols)
+  local total_grid_h=rows*(tile_h+gap)
+
+  -- Grid viewport
+  local grid_y=y+header_h
+  local grid_h=h-header_h-footer_h-6
+
+  -- Mouse-wheel scroll
+  local max_scroll=math.max(0,total_grid_h-grid_h)
+  if hov(x,grid_y,w,grid_h) then
+    local wheel=gfx.mouse_wheel-S.prev_mouse_wheel
+    if wheel~=0 then
+      S.preset_scroll=clamp(S.preset_scroll-math.floor(wheel/120)*(tile_h+gap),0,max_scroll)
+    end
+  end
+  S.preset_scroll=clamp(S.preset_scroll,0,max_scroll)
+
+  -- Thin scrollbar on right edge when content overflows
+  if max_scroll>0 then
+    local sb_x=x+w-5; local sb_h=math.max(18,grid_h*grid_h/total_grid_h)
+    local sb_y=grid_y+(grid_h-sb_h)*(S.preset_scroll/max_scroll)
+    set_col({0.26,0.26,0.32}); gfx.rect(sb_x,grid_y,3,grid_h,1)
+    set_col({0.55,0.55,0.62}); gfx.rect(sb_x,sb_y,3,sb_h,1)
+  end
+
+  -- Draw tiles
+  for bi,slot in ipairs(slots) do
     local bdef=S.bank_defs[slot]
-    local is_follow=(slot==1)
-    local ry=dy+(slot-1)*rh
-    local row_col=(S.active_bank==slot) and {0.20,0.30,0.45} or CP
-    fill_rect(x+4,ry,w-8,rh-2,row_col)
+    local row_i=math.ceil(bi/cols)-1      -- 0-indexed row
+    local col_i=(bi-1)%cols               -- 0-indexed col
+    local tx=x+pad+col_i*(tile_w+gap)
+    local ty=grid_y+row_i*(tile_h+gap)-S.preset_scroll
 
-    -- Colored dot
-    if bdef then
-      local dc=bdef.color or {0.5,0.5,0.5}
-      set_col(dc); gfx.circle(x+14,ry+11,6,1,1)
-    else
-      set_col(CBR); gfx.circle(x+14,ry+11,6,0,1)
-    end
+    -- Skip if fully outside clip region
+    if ty+tile_h>=grid_y and ty<=grid_y+grid_h then
+      local tc=bdef.color or {0.5,0.5,0.5}
+      local is_active=(S.active_bank==slot)
 
-    -- Name + category label
-    if bdef then
-      draw_str(x+26,ry+3,bdef.name:sub(1,14),CT,FONT_SMALL)
-      if bdef.category then
-        draw_str(x+26,ry+14,bdef.category:sub(1,12),CD,FONT_SMALL)
+      -- Tile background: color-tinted dark
+      local fade=is_active and 0.28 or 0.14
+      fill_rect(tx,ty,tile_w,tile_h,{
+        0.11+tc[1]*fade, 0.11+tc[2]*fade, 0.13+tc[3]*fade})
+
+      -- Left color strip
+      set_col(tc); gfx.rect(tx,ty,4,tile_h,1)
+
+      -- Active outline
+      if is_active then stroke_rect(tx,ty,tile_w,tile_h,tc) end
+
+      -- Slot number (dimmed top-left)
+      draw_str(tx+8,ty+4,tostring(slot),CD,FONT_SMALL)
+
+      -- Bank name
+      draw_str(tx+8,ty+16,bdef.name:sub(1,12),CT,FONT_NORMAL)
+
+      -- Category or "Follow Track"
+      local cat_label=bdef.category or "Follow Track"
+      draw_str(tx+8,ty+33,cat_label,CD,FONT_SMALL)
+
+      -- Delete button top-right (slot 1 immune)
+      if slot~=BANK_FOLLOW then
+        if btn(tx+tile_w-17,ty+4,14,14,"\xc3\x97",{0.55,0.18,0.18}) then
+          S.bank_defs[slot]=nil
+          if S.active_bank==slot then S.active_bank=1; refresh_knob_labels(S.last_track) end
+          S.config_dirty=true
+          status("Bank "..slot.." deleted")
+        end
       end
-    else
-      draw_str(x+26,ry+7,"\xe2\x80\x94 Empty \xe2\x80\x94",CD,FONT_SMALL)
-    end
 
-    -- Delete button (slot 1 is immune)
-    if bdef and not is_follow then
-      if btn(x+w-del_w-6,ry+2,del_w,rh-6,"\xc3\x97",{0.55,0.18,0.18}) then
-        S.bank_defs[slot]=nil
-        if S.active_bank==slot then S.active_bank=1; refresh_knob_labels(S.last_track) end
-        S.config_dirty=true
-        status("Bank "..slot.." deleted")
+      -- Click tile body to switch active bank
+      if clicked(tx,ty,tile_w-18,tile_h) then
+        S.active_bank=slot
+        reset_knob_engagement()
+        refresh_knob_labels(S.last_track)
+        status("Bank: "..(bdef.name or ""))
       end
     end
   end
 
-  dy=dy+8*rh+6
-  set_col(CBR); gfx.line(x+6,dy,x+w-6,dy,0); dy=dy+8
+  -- Footer: new bank button / creation form (pinned to bottom of panel)
+  local fy=y+h-footer_h
+  set_col(CBR); gfx.line(x+6,fy,x+w-6,fy,0); fy=fy+6
 
-  -- New bank button / form
   if not S.new_bank_form then
-    -- Count empty slots
-    local empty=0
-    for i=2,8 do if not S.bank_defs[i] then empty=empty+1 end end
-    local bc_new=empty>0 and {0.20,0.45,0.20} or {0.28,0.28,0.30}
-    if btn(x+6,dy,w-12,24,"+ New Bank",bc_new) and empty>0 then
+    local has_empty=false
+    for i=2,MAX_BANKS do if not S.bank_defs[i] then has_empty=true; break end end
+    local bc_new=has_empty and {0.20,0.45,0.20} or {0.28,0.28,0.30}
+    if btn(x+6,fy,w-12,22,"+ New Bank",bc_new) and has_empty then
       S.new_bank_form=true; S.new_bank_name=""; S.new_bank_cat="Reverb"
     end
-    if empty==0 then
-      draw_str(x+6,dy+28,"All 8 slots filled",CD,FONT_SMALL)
+    if not has_empty then
+      draw_str(x+6,fy+26,"All "..MAX_BANKS.." slots filled",CD,FONT_SMALL)
     end
   else
-    -- New bank creation form
-    draw_str(x+6,dy+2,"New Bank",CA,FONT_SMALL); dy=dy+20
+    -- Inline creation form
+    draw_str(x+6,fy+2,"New Bank",CA,FONT_SMALL); fy=fy+20
 
-    -- Name field
-    draw_str(x+6,dy+3,"Name:",CD,FONT_SMALL)
-    ti_field(x+46,dy,w-52,18,"new_bank_name",S.new_bank_name,function(v)
+    draw_str(x+6,fy+3,"Name:",CD,FONT_SMALL)
+    ti_field(x+46,fy,w-52,18,"new_bank_name",S.new_bank_name,function(v)
       S.new_bank_name=v
     end)
-    dy=dy+24
+    fy=fy+24
 
-    -- Category cycle button
-    draw_str(x+6,dy+3,"Type:",CD,FONT_SMALL)
+    draw_str(x+6,fy+3,"Type:",CD,FONT_SMALL)
     local cat_idx=1
     for i,c in ipairs(BANK_CATS) do if c==S.new_bank_cat then cat_idx=i; break end end
-    if btn(x+46,dy,w-52,18,S.new_bank_cat.." \xe2\x96\xba") then
+    if btn(x+46,fy,w-52,18,S.new_bank_cat.." \xe2\x96\xba") then
       cat_idx=(cat_idx%#BANK_CATS)+1; S.new_bank_cat=BANK_CATS[cat_idx]
     end
-    dy=dy+24
+    fy=fy+24
 
-    -- Create + Cancel
     local hw2=math.floor((w-14)/2)
-    if btn(x+6,dy,hw2,22,"Create",{0.20,0.45,0.20}) then
+    if btn(x+6,fy,hw2,22,"Create",{0.20,0.45,0.20}) then
       local name=(S.new_bank_name~="" and S.new_bank_name or S.new_bank_cat)
-      -- Find first empty slot (2-8)
       local slot=nil
-      for i=2,8 do if not S.bank_defs[i] then slot=i; break end end
+      for i=2,MAX_BANKS do if not S.bank_defs[i] then slot=i; break end end
       if slot then
-        -- Pick a color from palette cycling by slot index
         local pal_idx=((slot-2)%#BANK_PALETTE)+1
         S.bank_defs[slot]={name=name, category=S.new_bank_cat, color=BANK_PALETTE[pal_idx]}
         S.config_dirty=true
@@ -2192,7 +2247,7 @@ local function draw_presets(x,y,w,h)
       end
       S.new_bank_form=false
     end
-    if btn(x+8+hw2,dy,hw2,22,"Cancel") then S.new_bank_form=false end
+    if btn(x+8+hw2,fy,hw2,22,"Cancel") then S.new_bank_form=false end
   end
 end
 
