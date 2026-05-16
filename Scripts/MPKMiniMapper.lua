@@ -282,7 +282,7 @@ local PARAM_PRIORITIES = {
     {"High Cut","High Freq","LP Freq","Lowpass"},
   },
   Delay={
-    {"Wet","Mix"},
+    {"Wet/Dry","Dry/Wet","Wet Mix","Effect Level","Blend","Mix"},
     {"Time","BPM"},
     {"Feedback","Regen"},
     {"High Cut","Tone","Treble"},
@@ -357,7 +357,7 @@ local DRUM_PARTS = {
 
 -- Bank 1 fixed knob labels
 local BANK1_LABELS = {
-  "Track Volume","Track Pan","Track Pitch","High Pass Freq",
+  "Track Volume","Track Pan","Pitch Plugin","High Pass Freq",
   "Playhead Scrub","Reverb Wet","Delay Wet","Low Pass Freq",
 }
 
@@ -702,9 +702,32 @@ end
 -- ============================================================
 
 -- Note: K4 (High Pass) and K8 (Low Pass) delegate to the first EQ plugin on
--- the track. REAPER has no native HPF/LPF track property; the spec phrase
--- "REAPER track property" for these two appears to mean "without a separate
--- bank plugin" rather than a built-in API property.
+-- the track. REAPER has no native HPF/LPF track property.
+-- K3 (Pitch) delegates to the first pitch-shifting plugin found on the track.
+-- REAPER's D_PITCH track property only works when item pitch-shift mode is active,
+-- which is not reliable in general use, so a plugin is required.
+
+-- Returns (fx_index, param_index) of the main pitch parameter on the track's first
+-- pitch-shifting plugin, or nil,nil if none is found.
+local function find_pitch_fx(track)
+  if not track then return nil,nil end
+  local n=reaper.TrackFX_GetCount(track)
+  for i=0,n-1 do
+    local _,fx_name=reaper.TrackFX_GetFXName(track,i,"")
+    if icontains(fx_name,"pitch") or icontains(fx_name,"tune")
+    or icontains(fx_name,"transpose") then
+      local np=reaper.TrackFX_GetNumParams(track,i)
+      for p=0,np-1 do
+        local _,pn=reaper.TrackFX_GetParamName(track,i,p,"")
+        if icontains(pn,"pitch") or icontains(pn,"semitone")
+        or icontains(pn,"shift") or icontains(pn,"transpose") then
+          return i,p
+        end
+      end
+    end
+  end
+  return nil,nil
+end
 
 local function bank1_apply(knob,cc_val,track)
   if not track then return end
@@ -714,7 +737,8 @@ local function bank1_apply(knob,cc_val,track)
   elseif knob==2 then
     reaper.SetMediaTrackInfo_Value(track,"D_PAN",norm*2.0-1.0)
   elseif knob==3 then
-    reaper.SetMediaTrackInfo_Value(track,"D_PITCH",norm*24.0-12.0)
+    local pfx,pp=find_pitch_fx(track)
+    if pfx then reaper.TrackFX_SetParamNormalized(track,pfx,pp,norm) end
   elseif knob==4 then
     local fx=find_fx(track,"EQ")
     if fx then
@@ -790,7 +814,12 @@ local function bank1_reset(knob,track)
   if not track then return end
   if knob==1 then reaper.SetMediaTrackInfo_Value(track,"D_VOL",1.0)
   elseif knob==2 then reaper.SetMediaTrackInfo_Value(track,"D_PAN",0.0)
-  elseif knob==3 then reaper.SetMediaTrackInfo_Value(track,"D_PITCH",0.0)
+  elseif knob==3 then
+    local pfx,pp=find_pitch_fx(track)
+    if pfx then
+      local _,_,_=reaper.TrackFX_GetParam(track,pfx,pp)  -- unused but checks param exists
+      reaper.TrackFX_SetParamNormalized(track,pfx,pp,0.5)  -- centre = 0 semitones
+    end
   elseif knob==4 then
     local fx=find_fx(track,"EQ")
     if fx then
@@ -968,6 +997,8 @@ local function refresh_knob_labels(track)
     for k=1,8 do S.knob_labels[k]=BANK1_LABELS[k]; S.knob_active[k]=(track~=nil) end
     S.knob_active[5]=true  -- scrub is always global
     if track then
+      local pfx=find_pitch_fx(track)
+      S.knob_active[3]=(pfx~=nil)          -- pitch: needs a pitch plugin
       S.knob_active[6]=(find_fx(track,"Reverb")~=nil)
       S.knob_active[7]=(find_fx(track,"Delay")~=nil)
     end
@@ -1689,7 +1720,10 @@ local function get_knob_value_norm(k)
   if bank==BANK_FOLLOW then
     if k==1 then return clamp(reaper.GetMediaTrackInfo_Value(track,"D_VOL")/2.0,0,1)
     elseif k==2 then return clamp((reaper.GetMediaTrackInfo_Value(track,"D_PAN")+1)/2,0,1)
-    elseif k==3 then return clamp((reaper.GetMediaTrackInfo_Value(track,"D_PITCH")+12)/24,0,1)
+    elseif k==3 then
+      local pfx,pp=find_pitch_fx(track)
+      if pfx then return reaper.TrackFX_GetParamNormalized(track,pfx,pp) end
+      return nil
     elseif k==4 then
       local fx=find_fx(track,"EQ"); if not fx then return nil end
       for p=0,reaper.TrackFX_GetNumParams(track,fx)-1 do
