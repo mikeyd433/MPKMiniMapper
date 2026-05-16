@@ -178,6 +178,7 @@ while(midirecv(offset,msg1,msg2,msg3))(
   wp=(wp+1)%8; slider1=wp;
   (msg1&240)==192 ? 0 :
   ((msg1&240)==144||(msg1&240)==128)&&slider2 ? 0 :
+  (msg1&240)==176 ? 0 :
   midisend(offset,msg1,msg2,msg3);
 );
 ]]
@@ -185,17 +186,37 @@ while(midirecv(offset,msg1,msg2,msg3))(
 local MIDI_TRACK_NAME = "MPKMiniMapper Input"
 
 local PLUGIN_NAME_TABLE = {
-  Reverb     = {"ReaVerb","ValhallaRoom","ValhallaVintageVerb","RC-48","H-Reverb",
-                "Abbey Road Plates","ChromaVerb"},
-  Delay      = {"ReaDelay","EchoBoy","H-Delay","ValhallaDelay","Carbon Delay","Replika"},
-  Pan        = {"Haas","Pangaea","S1 Stereo Imager","Imager","Width"},
-  EQ         = {"ReaEQ","FabFilter Pro-Q","SSL 4000E","Neve 1073","API 550"},
-  Distortion = {"Decapitator","Saturn 2","RC-20","Trash 2","Devastator"},
-  Modulation = {"ReaChorus","MicroShift","Chorus","Flanger","Phaser","UltraChannel"},
+  Reverb     = {"ReaVerb","ValhallaRoom","Valhalla Room","ValhallaVintageVerb",
+                "Valhalla Vintage Verb","RC-48","H-Reverb","Abbey Road Plates",
+                "ChromaVerb","LiquidSonics","Seventh Heaven","OldSkoolVerb",
+                "Acon Reverb","ProVerb","Relab LX480","Exponential Audio",
+                "Nimbus","Renaissance Reverb","TrueVerb","R-Verb","Platinum Reverb",
+                "Altiverb","Hybrid Reverb","Convology"},
+  Delay      = {"ReaDelay","EchoBoy","H-Delay","ValhallaDelay","Valhalla Delay",
+                "Carbon Delay","Replika","Echoboy","DDL","Analog Echo","Reel ADT",
+                "Waves Delay","Grain Delay","SoundToys","ModEcho","TimeLine",
+                "Waves SuperTap","Multitap Delay","BeatDelay"},
+  Pan        = {"Haas","Pangaea","S1 Stereo Imager","Imager","Width","Wider",
+                "Stereo Tool","Ozone Imager","MSED","Mid-Side","Utility"},
+  EQ         = {"ReaEQ","FabFilter Pro-Q","Pro-Q","SSL 4000","Neve 1073","API 550",
+                "API 560","Pultec","MEqualizer","Dynamic EQ","Parametric EQ",
+                "Massenburg","Oxford EQ","Digital EQ","Classic EQ","Kirchhoff",
+                "Waves Q","Q10","LinEQ","Linear Phase","Ozone EQ","Neutron EQ",
+                "Pro-MB","TDR Nova","TDR VOS","Smooth Operator"},
+  Distortion = {"Decapitator","Saturn","RC-20","Trash","Devastator","Magneto",
+                "Radiator","Overdrive","Clipper","Wave Crusher","WaveShaper",
+                "Guitar Rig","Amplitube","Bias FX","Tube Screamer","Lo-Fi"},
+  Modulation = {"ReaChorus","MicroShift","UltraChannel","ChorusEnsemble",
+                "Chorus","Flanger","Phaser","Tremolo","Vibrato","Rotary",
+                "Dimension","BX_Chorus","Waves Doubler","Little Plate","MondoMod",
+                "Kaleidoscope","Enigma","MetaFlanger"},
   Drums      = {"EZDrummer","Superior Drummer","BFD","Addictive Drums",
-                "Steven Slate Drums","MT-Power Drum Kit","Abbey Road Drummer"},
+                "Steven Slate Drums","MT-Power Drum Kit","Abbey Road Drummer",
+                "Groove Agent","Battery","DrumStation","Kontakt Drum","SSD5",
+                "GetGood Drums","Trigger","XLN Audio"},
   Instrument = {"Kontakt","Spire","Serum","Vital","Massive","Omnisphere","Sylenth1",
-                "Pigments","Phase Plant","HALion","Play","UVI","Surge","Helm"},
+                "Pigments","Phase Plant","HALion","Play","UVI","Surge","Helm",
+                "Diva","Hive","Zebra","Repro","u-he","Alchemy","ES2"},
 }
 
 -- Each slot is a list of synonym keywords tried in order for that knob position.
@@ -554,12 +575,25 @@ local function guess_by_params(track,fx_idx)
 end
 
 local function lib_entry(name,track,fx_idx)
-  if S.plugin_library[name] then return S.plugin_library[name] end
+  local e=S.plugin_library[name]
+  if e then
+    -- If the entry was auto-created as Unknown but never confirmed by the user,
+    -- try the guess again — the plugin name table may have grown since first encounter,
+    -- or the entry was saved before parameter scanning was available.
+    if e.status~="Confirmed" and (e.confirmed=="Unknown" or not e.confirmed) then
+      local g=guess_by_name(name)
+      if not g and track and fx_idx then g=guess_by_params(track,fx_idx) end
+      if g and g~="Unknown" then
+        e.guessed=g; e.confirmed=g; S.config_dirty=true
+      end
+    end
+    return e
+  end
   local g=guess_by_name(name)
   if not g and track and fx_idx then g=guess_by_params(track,fx_idx) end
   g=g or "Unknown"
-  local e={guessed=g, confirmed=g, status="Unconfirmed"}
-  S.plugin_library[name]=e; return e
+  local e2={guessed=g, confirmed=g, status="Unconfirmed"}
+  S.plugin_library[name]=e2; S.config_dirty=true; return e2
 end
 
 local function find_fx(track,category)
@@ -1217,8 +1251,10 @@ local function process_midi_event(msg1,msg2,msg3,track)
       S.config_dirty=true
       status("Learned CC "..cc.." → K"..S.midi_learn_knob); return
     end
+    local knob_matched=false
     for k=1,8 do
       if S.knob_ccs[k]==cc then
+        knob_matched=true
         -- Auto-select the touched knob in Setup mode
         if S.window_mode==MODE_SETUP and S.selected_knob~=k then
           S.selected_knob=k; S.selected_pad=nil; S.dropdown_open=nil
@@ -1235,6 +1271,9 @@ local function process_midi_event(msg1,msg2,msg3,track)
         break
       end
     end
+    -- Re-emit CCs that don't belong to any knob so other REAPER routing still works.
+    -- Knob CCs are intentionally swallowed — Lua drives those parameters directly.
+    if not knob_matched then reaper.StuffMIDIMessage(0,msg1,msg2,msg3) end
     return
   end
 
@@ -1696,6 +1735,15 @@ local function draw_mini()
     draw_strc((col-1)*cw,cy-kr-18,cw,"K"..k, active and CT or CD, FONT_SMALL)
     draw_strc((col-1)*cw,cy+kr+5,cw,(S.knob_labels[k] or ""):sub(1,11),
               active and CT or CD, FONT_SMALL)
+    -- Hover: value readout + reset button (same behaviour as Dashboard)
+    local no_reset_m=(S.active_bank==BANK_FOLLOW and k==5)
+    if active and hov((col-1)*cw,cy-kr-18,cw,kr*2+28) then
+      local vs=get_knob_value_str(k)
+      if vs then draw_strc((col-1)*cw,cy+kr+18,cw,vs,{0.5,0.8,0.55},FONT_SMALL) end
+      if not no_reset_m then
+        if btn(cx+kr-10,cy-kr-1,16,12,"\xe2\x86\xba",CRST) then reset_knob(k,S.last_track) end
+      end
+    end
   end
 
   -- Scrub sensitivity slider + Rel toggle
@@ -1722,16 +1770,18 @@ end
 
 local function draw_bank_dots(x,y)
   local r=10; local gap=28; local track=S.last_track; local per_row=8
-  local b=1
+  local b=1; local any_plugin_found=false; local max_row=0
   while b<=MAX_BANKS do
     local bdef_d=S.bank_defs[b]
     if bdef_d then
       local col_i=(b-1)%per_row; local row_i=math.floor((b-1)/per_row)
+      if row_i>max_row then max_row=row_i end
       local cx=x+col_i*gap+r; local cy=y+row_i*(r*2+6)
       local col=bdef_d.color or {0.5,0.5,0.5}
       local cat=bdef_d.category
       local has=(b==BANK_FOLLOW and track~=nil) or
                 (track and (cat or bdef_d.pinned_plugin) and find_fx_for_bank(track,bdef_d)~=nil)
+      if has and b~=BANK_FOLLOW then any_plugin_found=true end
       if has then set_col(col); gfx.circle(cx,cy,r,1,1)
       else set_col(col,0.3); gfx.circle(cx,cy,r,0,1) end
       if b==S.active_bank then set_col(CT); gfx.circle(cx,cy,r+2,0,1) end
@@ -1744,6 +1794,11 @@ local function draw_bank_dots(x,y)
     end
     b=b+1
     if b>MAX_BANKS then break end
+  end
+  -- Show hint when a track is selected, has plugins, but none were recognized.
+  if track and not any_plugin_found and reaper.TrackFX_GetCount(track)>0 then
+    local hint_y=y+(max_row+1)*(r*2+6)+2
+    draw_str(x,hint_y,"No plugins recognized — Setup \xe2\x86\x92 Library to confirm categories",{0.7,0.6,0.3},FONT_SMALL)
   end
 end
 
