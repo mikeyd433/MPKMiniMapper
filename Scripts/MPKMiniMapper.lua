@@ -238,10 +238,12 @@ local PARAM_PRIORITIES = {
     {"Wet","Wet Mix","Wet Level","Wet/Dry","Effect Level","Delay Mix","Dry/Wet"},
     {"Length","Delay Time","BPM Sync","Note Length","Time (ms)","Delay (ms)","Time Left"},
     {"Feedback","Regen","Repeat","Recycle","Regeneration","FB Level"},
-    {"High Cut","Hi Cut","HF Damp","Tone","Treble","Damping","High Damping"},
-    {"Low Cut","Lo Cut","Low Damp","LF Damp","Bass Cut"},
+    -- K4/K5: modulation (avoids putting HP/LP-style filters on the same knobs as Bank 1 K4/K8)
     {"Mod Rate","Modulation Rate","LFO Rate","Wobble","Chorus Rate","Mod Speed"},
     {"Mod Depth","Modulation Depth","LFO Depth","Chorus Depth","Mod Amount"},
+    -- K6/K7: filter tone controls
+    {"High Cut","Hi Cut","HF Damp","Tone","Treble","Damping","High Damping"},
+    {"Low Cut","Lo Cut","Low Damp","LF Damp","Bass Cut"},
     {"Output","Out Gain","Out Level","Dry Level","Dry"},
   },
   Pan={
@@ -1336,13 +1338,17 @@ local function process_midi_event(msg1,msg2,msg3,track)
   local sb=msg1&0xF0; local ch=msg1&0x0F
 
   -- Program Change → bank switch (intercepted, never passed through)
+  -- Always update active_bank unconditionally. Previously gated on S.bank_defs[bank]
+  -- existing, but a missing def caused the switch to silently fail and leave
+  -- S.active_bank at 1 (BANK_FOLLOW), making bank1_apply fire for all knobs.
   if sb==0xC0 then
     local bank=msg2+1
-    if bank>=1 and bank<=8 and S.bank_defs[bank] then
+    if bank>=1 and bank<=8 then
       S.active_bank=bank
-      reset_knob_engagement()   -- knobs must re-engage after bank change
+      reset_knob_engagement()
       refresh_knob_labels(track)
-      status("Bank: "..(S.bank_defs[bank].name or ""))
+      local bname=S.bank_defs[bank] and (S.bank_defs[bank].name or "") or ("Bank "..bank)
+      status("Bank: "..bname)
     end
     return
   end
