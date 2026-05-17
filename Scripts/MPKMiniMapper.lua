@@ -1164,14 +1164,17 @@ local function plugin_bank_apply(knob,cc_val,track,bank_id)
       if cc_val ~= prev then
         local dir = cc_val > prev and 1 or -1
         local cur = reaper.TrackFX_GetParamNormalized(track, fx, param)
-        -- Many delay/time parameters are logarithmically scaled: ns_step is
-        -- tiny at the bottom (decimals of ms) and the same tick feels huge at
-        -- the top.  Use largestep if the plugin provides one; otherwise floor
-        -- at 1/40 of the full range so there are always at least 40 positions.
-        local step = (ns_large and ns_large > 0 and ns_large <= 0.5)
-                     and ns_large
-                     or math.max(ns_step, 0.025)
-        reaper.TrackFX_SetParamNormalized(track, fx, param, clamp(cur + dir * step, 0, 1))
+        -- Multiplicative stepping: each tick multiplies or divides the current
+        -- value by a fixed ratio.  This gives equal relative change at every
+        -- position — the same feel as semitones in pitch — and is correct for
+        -- any parameter whose values are logarithmically perceived (time, freq).
+        -- 2^(1/3) ≈ 1.259 puts three evenly-spaced steps between each doubling
+        -- (e.g. 1/4 note → dotted 1/4 → 3/8 → 1/2 note → …).
+        -- When the parameter is at zero, bootstrap from one native step up.
+        local RATIO = 2^(1/3)
+        local base  = (cur > 0) and cur or ns_step
+        local new_val = (dir > 0) and (base * RATIO) or (base / RATIO)
+        reaper.TrackFX_SetParamNormalized(track, fx, param, clamp(new_val, 0, 1))
       end
       return
     end
