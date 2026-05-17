@@ -1126,12 +1126,12 @@ local function plugin_bank_apply(knob,cc_val,track,bank_id)
   -- Stepped parameter: accumulate CC delta and advance exactly one step per
   -- THRESH units accumulated.  The MPK Mini pots send consecutive absolute values
   -- (delta = 1 per event), so a simple delta-threshold check would never fire.
-  -- Accumulating gives smooth one-step-at-a-time control at any turn speed.
-  -- THRESH = 3 → ~42 steps across the full 0-127 pot range, covering most
-  -- musical-timing step counts (typically 20-40 values).
+  -- THRESH is auto-scaled so a full 0→127 pot sweep covers the entire step range:
+  --   THRESH = floor(127 / #steps).  For 40 steps → THRESH=3; 60 steps → THRESH=2;
+  --   100+ steps → THRESH=1 (one step per CC unit).
   local step_norms = profile.knob_step_norms and profile.knob_step_norms[knob]
   if profile.knob_stepped and profile.knob_stepped[knob] and step_norms and #step_norms > 1 then
-    local THRESH = 3
+    local THRESH = math.max(1, math.floor(127 / #step_norms))
     local delta  = cc_val - S.last_cc_raw[knob]
     if delta == 0 then return end
     S.knob_stepped_accum[knob] = (S.knob_stepped_accum[knob] or 0) + delta
