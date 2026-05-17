@@ -324,7 +324,7 @@ local MODE_MINI      = "mini"
 local MODE_DASHBOARD = "dashboard"
 local MODE_SETUP     = "setup"
 local DIMS = {
-  [MODE_MINI]     ={w=387,h=270},
+  [MODE_MINI]     ={w=387,h=280},
   [MODE_DASHBOARD]={w=640,h=360},
   [MODE_SETUP]    ={w=940,h=740},
 }
@@ -403,6 +403,7 @@ local S = {
   dropdown_open     = nil,
   dropdown_scroll   = 0,
   lib_scroll        = 0,
+  mini_bank_dd_open = false,  -- bank selector dropdown in Mini mode
 
   pending_drum_prompt = nil,  -- plugin name needing first-time pad mapping
 
@@ -1874,23 +1875,32 @@ local function draw_mini()
   gfx.setfont(FONT_BOLD,"Arial",18,string.byte("b"))
   gfx.setfont(FONT_SMALL,"Arial",13,0)
 
-  gfx.setfont(FONT_BOLD); set_col(bc); gfx.x,gfx.y=10,9
-  gfx.drawstr(bdef and bdef.name or "")
+  -- Bank selector dropdown button (replaces plain bank name label)
+  local dd_x,dd_y,dd_w,dd_h=6,9,gfx.w-12,22
+  local bname_label=(bdef and bdef.name or "No Bank").." \xe2\x96\xbe"  -- ▾
+  local dd_bg=S.mini_bank_dd_open and CBTH or CBTN
+  fill_rect(dd_x,dd_y,dd_w,dd_h,dd_bg)
+  stroke_rect(dd_x,dd_y,dd_w,dd_h,CBR)
+  gfx.setfont(FONT_BOLD); set_col(bc)
+  gfx.x,gfx.y=dd_x+6,dd_y+3; gfx.drawstr(bname_label)
+  if clicked(dd_x,dd_y,dd_w,dd_h) then
+    S.mini_bank_dd_open=not S.mini_bank_dd_open
+  end
 
   -- Track name — shortened visually; full name shown as tooltip on hover
   local tn=S.last_track_name
-  draw_str(10,34,tn,CD,FONT_SMALL)
-  local show_tip=hov(10,34,gfx.w-20,18)
+  draw_str(10,36,tn,CD,FONT_SMALL)
+  local show_tip=hov(10,36,gfx.w-20,18)
 
   -- Status bar — always reserves space; text visible for 3 s after each event
   if S.status_msg~="" and (reaper.time_precise()-S.status_time)<3.0 then
-    draw_str(10,55,S.status_msg,{0.55,0.75,0.45},FONT_SMALL)
+    draw_str(10,57,S.status_msg,{0.55,0.75,0.45},FONT_SMALL)
   end
 
-  -- 2×4 knob grid (circles spaced to clear status bar)
+  -- 2×4 knob grid
   local kr=12
   local cw=math.floor(gfx.w/4)
-  local row_cy={110,185}  -- circle centres, chosen to fit in h=270 with all additions
+  local row_cy={115,190}
   local now=reaper.time_precise()
   local GLOW_DUR=2.0
   for k=1,8 do
@@ -1938,7 +1948,7 @@ local function draw_mini()
   end
 
   -- Scrub sensitivity slider + Rel toggle
-  local sx,sy,sw,sh=8,225,130,12
+  local sx,sy,sw,sh=8,230,130,12
   local new_sens=hslider(sx,sy,sw,sh,S.scrub_sensitivity)
   if new_sens~=S.scrub_sensitivity then S.scrub_sensitivity=new_sens; S.config_dirty=true end
   gfx.setfont(FONT_SMALL); set_col(CD)
@@ -1950,6 +1960,44 @@ local function draw_mini()
   local bw=math.floor((gfx.w-16)/2); local by=gfx.h-46
   if btn(6,by,bw,24,"Dashboard") then S.pending_mode=MODE_DASHBOARD end
   if btn(10+bw,by,bw,24,"Setup")  then S.pending_mode=MODE_SETUP     end
+
+  -- Bank dropdown overlay — drawn last so it sits on top of knobs
+  if S.mini_bank_dd_open then
+    local maxr=8; local rh=22
+    local n=#S.bank_defs
+    local lh=math.min(maxr,n)*rh
+    local ly=dd_y+dd_h+1
+    fill_rect(dd_x,ly,dd_w,lh,CP)
+    stroke_rect(dd_x,ly,dd_w,lh,CBR)
+    for i=1,math.min(maxr,n) do
+      local bdef_i=S.bank_defs[i]
+      if not bdef_i then break end
+      local py=ly+(i-1)*rh
+      local is_sel=(i==S.active_bank)
+      if is_sel then fill_rect(dd_x,py,dd_w,rh,CBTH) end
+      if hov(dd_x,py,dd_w,rh) and not is_sel then fill_rect(dd_x,py,dd_w,rh,{0.22,0.22,0.28}) end
+      local bc_i=bdef_i.color or {0.5,0.5,0.5}
+      -- Colored dot indicating bank colour
+      gfx.set(bc_i[1],bc_i[2],bc_i[3],1)
+      gfx.circle(dd_x+10,py+rh/2,5,1,1)
+      gfx.set(0,0,0,0.4); gfx.circle(dd_x+10,py+rh/2,5,0,1)
+      draw_str(dd_x+22,py+4,bdef_i.name, is_sel and CT or CD, FONT_SMALL)
+      if clicked(dd_x,py,dd_w,rh) then
+        S.active_bank=i
+        reset_knob_engagement()
+        refresh_knob_labels(S.last_track)
+        status("Bank: "..(bdef_i.name or ""))
+        S.mini_bank_dd_open=false
+        S.config_dirty=true
+      end
+    end
+    -- Click outside the dropdown to close it
+    if gfx.mouse_lb==1 and S.prev_mouse_lb==0 then
+      if not hov(dd_x,dd_y,dd_w,dd_h+lh+1) then
+        S.mini_bank_dd_open=false
+      end
+    end
+  end
 
   -- Tooltip drawn last so it sits on top of everything
   if show_tip then draw_tooltip(tn,gfx.mouse_x,gfx.mouse_y) end
