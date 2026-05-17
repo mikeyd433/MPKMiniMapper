@@ -1160,10 +1160,15 @@ local function plugin_bank_apply(knob,cc_val,track,bank_id)
   --   one per discovered step.  Sets the exact probed norm position.
   -- Strategy B — native (TrackFX_GetParameterStepSizes): fallback for un-probed
   --   knobs whose plugin reports a uniform step size.  Sets exact step position.
+  -- Stepped parameters snap immediately — no soft takeover.
+  -- Soft takeover prevents endpoint access (the knob can never "cross" a position
+  -- that's outside the physical range), and stepped params are inherently discrete
+  -- so a position-based snap is exactly what the user expects.
   local step_norms = profile.knob_step_norms and profile.knob_step_norms[knob]
   if profile.knob_stepped and profile.knob_stepped[knob]
       and step_norms and #step_norms > 1 then
-    -- Strategy A: probe-based
+    -- Strategy A: probe-based. Sets to midpoint of the target step's zone so the
+    -- plugin reliably lands on the correct step regardless of where the boundary falls.
     local n        = #step_norms
     local target_i = clamp(math.floor(cc_val / 127 * (n - 1) + 0.5) + 1, 1, n)
     local cur      = reaper.TrackFX_GetParamNormalized(track, fx, param)
@@ -1172,25 +1177,22 @@ local function plugin_bank_apply(knob,cc_val,track,bank_id)
       local d = math.abs(cur - sn)
       if d < best_d then best_d = d; cur_i = i end
     end
-    local cur_as_norm = (cur_i - 1) / math.max(n - 1, 1)
-    if not check_engaged(knob, cc_val, cur_as_norm) then return end
     if target_i ~= cur_i then
-      reaper.TrackFX_SetParamNormalized(track, fx, param, step_norms[target_i])
+      local hi = (target_i < n) and step_norms[target_i + 1] or 1.0
+      reaper.TrackFX_SetParamNormalized(track, fx, param,
+        (step_norms[target_i] + hi) * 0.5)
     end
     return
   end
   if not profile.knob_relative[knob] then
-    -- Strategy B: native step size (no probing required)
+    -- Strategy B: native step size (no probing required). No soft takeover.
     local ns_ok, ns_step = reaper.TrackFX_GetParameterStepSizes(track, fx, param)
     if ns_ok and ns_step and ns_step > 0 then
-      local n      = math.max(2, math.floor(1.0 / ns_step + 0.5))
-      local cur    = reaper.TrackFX_GetParamNormalized(track, fx, param)
-      local cur_i  = clamp(math.floor(cur / ns_step + 0.5), 0, n - 1)
-      local cur_norm = cur_i / math.max(n - 1, 1)
-      if not check_engaged(knob, cc_val, cur_norm) then return end
+      local n        = math.max(2, math.floor(1.0 / ns_step + 0.5))
+      local cur      = reaper.TrackFX_GetParamNormalized(track, fx, param)
+      local cur_i    = clamp(math.floor(cur / ns_step + 0.5), 0, n - 1)
       local target_i = clamp(math.floor(cc_val / 127 * (n - 1) + 0.5), 0, n - 1)
       if target_i ~= cur_i then
-        -- Exact step position (avoids equidistant rounding at step 0)
         reaper.TrackFX_SetParamNormalized(track, fx, param,
           clamp(target_i * ns_step, 0, 1))
       end
