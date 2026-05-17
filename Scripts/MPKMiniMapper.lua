@@ -1155,7 +1155,7 @@ local function plugin_bank_apply(knob,cc_val,track,bank_id)
   -- Works without probing. Falls through to absolute mode when ns_step == 0
   -- (continuous parameter) or when relative mode is selected.
   if not profile.knob_relative[knob] then
-    local ns_ok, ns_step, _, _, ns_toggle = reaper.TrackFX_GetParameterStepSizes(track, fx, param)
+    local ns_ok, ns_step, _, ns_large, ns_toggle = reaper.TrackFX_GetParameterStepSizes(track, fx, param)
     -- Only engage for parameters with many fine steps (ns_step <= 0.1 = at least 10 steps).
     -- Coarse selectors (ns_step > 0.1, 2-9 positions) use absolute mode so one tick
     -- doesn't jump half the range.
@@ -1164,7 +1164,14 @@ local function plugin_bank_apply(knob,cc_val,track,bank_id)
       if cc_val ~= prev then
         local dir = cc_val > prev and 1 or -1
         local cur = reaper.TrackFX_GetParamNormalized(track, fx, param)
-        reaper.TrackFX_SetParamNormalized(track, fx, param, clamp(cur + dir * ns_step, 0, 1))
+        -- Many delay/time parameters are logarithmically scaled: ns_step is
+        -- tiny at the bottom (decimals of ms) and the same tick feels huge at
+        -- the top.  Use largestep if the plugin provides one; otherwise floor
+        -- at 1/40 of the full range so there are always at least 40 positions.
+        local step = (ns_large and ns_large > 0 and ns_large <= 0.5)
+                     and ns_large
+                     or math.max(ns_step, 0.025)
+        reaper.TrackFX_SetParamNormalized(track, fx, param, clamp(cur + dir * step, 0, 1))
       end
       return
     end
