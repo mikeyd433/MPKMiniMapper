@@ -453,7 +453,14 @@ end
 -- ============================================================
 
 local function clamp(v,lo,hi) return math.max(lo,math.min(hi,v)) end
-local function cc_norm(v) return v/127.0 end
+-- Map CC value 0-127 to 0.0-1.0.
+-- Hardware knobs often stop at CC=1 or CC=126 rather than the true extremes;
+-- snap the outermost 2 steps to exactly 0 and 1 so sliders reach their limits.
+local function cc_norm(v)
+  if v <= 2   then return 0.0 end
+  if v >= 125 then return 1.0 end
+  return v / 127.0
+end
 local function note_name(n)
   local names={"C","C#","D","D#","E","F","F#","G","G#","A","A#","B"}
   return names[(n%12)+1]..tostring(math.floor(n/12)-1)
@@ -762,9 +769,11 @@ local function check_engaged(k, cc_val, cur_norm)
   if S.knob_engaged[k] then return true end
   local cur_cc = clamp(cur_norm*127, 0, 127)
   local prev   = S.last_cc_raw[k]
-  -- Engage when crossing or landing within deadzone of current value
+  -- Engage when the knob crosses the current parameter position (zero snap).
+  -- Also engage within 1 CC step so the knob can lock on at the extremes where
+  -- crossing is impossible, while keeping the snap to < 0.8% of the range.
   local crossed = (prev-cur_cc)*(cc_val-cur_cc) <= 0
-  local near    = math.abs(cc_val-cur_cc) <= 3
+  local near    = math.abs(cc_val-cur_cc) <= 1
   if crossed or near then S.knob_engaged[k]=true; return true end
   return false
 end
