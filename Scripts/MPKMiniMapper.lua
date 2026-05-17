@@ -403,7 +403,8 @@ local S = {
   dropdown_open     = nil,
   dropdown_scroll   = 0,
   lib_scroll        = 0,
-  mini_bank_dd_open = false,  -- bank selector dropdown in Mini mode
+  mini_bank_dd_open    = false,  -- bank selector dropdown in Mini mode
+  all_installed_plugins= nil,    -- lazily populated on first plugin-mode open; nil = needs scan
 
   pending_drum_prompt = nil,  -- plugin name needing first-time pad mapping
 
@@ -2510,6 +2511,45 @@ end
 -- UI — MODE: SETUP — bank management panel
 -- ============================================================
 
+-- Builds a sorted, deduplicated list of all known plugin names.
+-- Sources: confirmed plugin library, every FX on every project track,
+-- and REAPER's VST cache files on disk.  All names are strip_prefix()-ed
+-- so they match what find_fx_for_bank uses for pinned_plugin comparison.
+local function scan_installed_plugins()
+  local seen = {}
+  local result = {}
+  local function add(name)
+    if not name or name=="" then return end
+    name=name:match("^%s*(.-)%s*$")  -- trim
+    if name~="" and not seen[name] then seen[name]=true; result[#result+1]=name end
+  end
+  -- Already-known library entries
+  for pname in pairs(S.plugin_library) do add(pname) end
+  -- All FX on every track in the project
+  for ti=0,reaper.CountTracks(0)-1 do
+    local t=reaper.GetTrack(0,ti)
+    for fi=0,reaper.TrackFX_GetCount(t)-1 do
+      local ok,raw=reaper.TrackFX_GetFXName(t,fi,"")
+      if ok then add(strip_prefix(raw)) end
+    end
+  end
+  -- REAPER VST cache files (best-effort — format varies by version)
+  local rp=reaper.GetResourcePath()
+  for _,fname in ipairs({"reaper-vstcache2.ini","reaper-vst3cache.ini","reaper-vstcache.ini"}) do
+    local f=io.open(rp.."\\"..fname,"r")
+    if f then
+      for line in f:lines() do
+        -- VST2/3 cache format stores the human name as "n=Plugin Name"
+        local n=line:match("^n=(.+)") or line:match("^name=(.+)")
+        if n then add(n) end
+      end
+      f:close()
+    end
+  end
+  table.sort(result,function(a,b) return a:lower()<b:lower() end)
+  return result
+end
+
 -- Color palette for new banks (cycles through when no color assigned)
 local BANK_PALETTE = {
   {0.70,0.30,0.90},{0.20,0.80,0.80},{1.00,0.60,0.10},{0.30,0.90,0.30},
@@ -2522,9 +2562,9 @@ local function draw_presets(x,y,w,h)
   fill_rect(x,y,w,h,CP); stroke_rect(x,y,w,h,CBR)
   draw_str(x+6,y+8,"Preset Banks",CT,FONT_BOLD)
 
-  -- Footer height: larger in plugin mode to fit the library picker
+  -- Footer height: larger in plugin mode to fit the full plugin picker + refresh button
   local footer_h = S.new_bank_form and
-                   (S.new_bank_mode=="plugin" and 190 or 140) or 32
+                   (S.new_bank_mode=="plugin" and 212 or 140) or 32
   local header_h = 26
 
   -- Grid tile layout
@@ -2664,12 +2704,11 @@ local function draw_presets(x,y,w,h)
       end
       fy=fy+24
     else
-      -- Plugin picker: scrollable list from library
-      local plugins={}
-      for pname,e in pairs(S.plugin_library) do
-        plugins[#plugins+1]={name=pname, cat=e.confirmed or e.guessed or "Unknown"}
+      -- Plugin picker: all installed plugins (library + project tracks + VST cache files)
+      if not S.all_installed_plugins then
+        S.all_installed_plugins=scan_installed_plugins()
       end
-      table.sort(plugins,function(a,b) return a.name<b.name end)
+      local plugins=S.all_installed_plugins
       local list_h=math.min(#plugins,4)*18; if list_h==0 then list_h=18 end
       local max_pscroll=math.max(0,#plugins-4)
       if hov(x+6,fy,w-12,list_h) then
@@ -2681,26 +2720,33 @@ local function draw_presets(x,y,w,h)
       end
       fill_rect(x+6,fy,w-12,list_h,CB); stroke_rect(x+6,fy,w-12,list_h,CBR)
       if #plugins==0 then
-        draw_str(x+10,fy+3,"No plugins in library",CD,FONT_SMALL)
+        draw_str(x+10,fy+3,"No plugins found — try Refresh",CD,FONT_SMALL)
       else
         for i=1,math.min(4,#plugins) do
-          local p=plugins[i+S.new_bank_plugin_scroll]
-          if not p then break end
+          local pname=plugins[i+S.new_bank_plugin_scroll]
+          if not pname then break end
           local py=fy+(i-1)*18
-          local sel=(S.new_bank_plugin==p.name)
-          if sel then fill_rect(x+6,py,w-12,18,{0.15,0.28,0.45}) end
-          draw_str(x+10,py+3,p.name:sub(1,20),sel and CT or CD,FONT_SMALL)
+          local sel=(S.new_bank_plugin==pname)
+          if sel then fill_rect(x+6,py,w-12,18,{0.15,0.28,0.45})
+          elseif hov(x+6,py,w-12,18) then fill_rect(x+6,py,w-12,18,{0.18,0.20,0.26}) end
+          draw_str(x+10,py+3,pname:sub(1,22),sel and CT or CD,FONT_SMALL)
           if clicked(x+6,py,w-12,18) then
-            S.new_bank_plugin=p.name
-            -- auto-set category from confirmed library entry
-            local e=S.plugin_library[p.name]
+            S.new_bank_plugin=pname
+            local e=S.plugin_library[pname]
             if e and e.confirmed and e.confirmed~="Unknown" then
               S.new_bank_cat=e.confirmed
             end
           end
         end
       end
-      fy=fy+list_h+4
+      fy=fy+list_h+3
+      -- Scroll position indicator + refresh button
+      local n_str=tostring(#plugins).." plugins"
+      draw_str(x+6,fy+3,n_str,CD,FONT_SMALL)
+      if btn(x+w-50,fy,44,16,"Refresh") then
+        S.all_installed_plugins=nil; S.new_bank_plugin_scroll=0
+      end
+      fy=fy+20
       if S.new_bank_plugin~="" then
         draw_str(x+6,fy+2,"\xe2\x86\x92 "..S.new_bank_plugin:sub(1,22),CA,FONT_SMALL)
       else
