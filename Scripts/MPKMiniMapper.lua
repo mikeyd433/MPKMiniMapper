@@ -1156,7 +1156,10 @@ local function plugin_bank_apply(knob,cc_val,track,bank_id)
   -- (continuous parameter) or when relative mode is selected.
   if not profile.knob_relative[knob] then
     local ns_ok, ns_step, _, _, ns_toggle = reaper.TrackFX_GetParameterStepSizes(track, fx, param)
-    if ns_ok and ns_step and ns_step > 0 and not ns_toggle then
+    -- Only engage for parameters with many fine steps (ns_step <= 0.1 = at least 10 steps).
+    -- Coarse selectors (ns_step > 0.1, 2-9 positions) use absolute mode so one tick
+    -- doesn't jump half the range.
+    if ns_ok and ns_step and ns_step > 0 and ns_step <= 0.1 and not ns_toggle then
       local prev = S.last_cc_raw[knob]
       if cc_val ~= prev then
         local dir = cc_val > prev and 1 or -1
