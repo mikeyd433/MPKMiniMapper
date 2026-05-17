@@ -1122,31 +1122,54 @@ local function plugin_bank_apply(knob,cc_val,track,bank_id)
   local lo=profile.knob_min[knob] or 0
   local hi=profile.knob_max[knob] or 1
 
-  -- Stepped parameter: direct zone mapping with soft takeover.
-  -- The 0-127 pot range is divided into N equal zones (one per detected step).
-  -- cc_val maps linearly to a step index so every step is reachable from any
-  -- physical pot position, the same way a continuous param works.
-  -- Soft takeover prevents jumps: the knob must reach the zone that corresponds
-  -- to the current step before it takes over.  No accumulator needed.
+  -- Stepped parameter: zone mapping with soft takeover.
+  -- Strategy 1 — use REAPER's native TrackFX_GetParameterStepSizes when the plugin
+  --   reports a step size.  Gives accurate evenly-spaced zones without probing.
+  -- Strategy 2 — fall back to the probed step_norms table when native size is 0.
+  --   Sets to the MIDPOINT of each step's range rather than its lower boundary so
+  --   floating-point edge cases don't accidentally land on the wrong step.
+  -- In both cases the 0-127 pot range maps to a step INDEX (not a raw norm value),
+  -- so every step occupies an equal physical zone on the pot regardless of how
+  -- unevenly the steps are distributed across the 0-1 normalised range.
+  -- Soft takeover: the knob must reach the zone for the current step before engaging.
   local step_norms = profile.knob_step_norms and profile.knob_step_norms[knob]
-  if profile.knob_stepped and profile.knob_stepped[knob] and step_norms and #step_norms > 1 then
-    local n = #step_norms
-    -- Map cc_val 0-127 → step index 1..n
-    local target_i = clamp(math.floor(cc_val / 127 * (n - 1) + 0.5) + 1, 1, n)
-    -- Find which step the parameter is currently on
-    local cur = reaper.TrackFX_GetParamNormalized(track, fx, param)
-    local cur_i, best_d = 1, math.huge
-    for i, sn in ipairs(step_norms) do
-      local d = math.abs(cur - sn)
-      if d < best_d then best_d = d; cur_i = i end
+  if profile.knob_stepped and profile.knob_stepped[knob] then
+    -- Strategy 1: native step size from REAPER
+    local ns_ok, ns_step = reaper.TrackFX_GetParameterStepSizes(track, fx, param)
+    if ns_ok and ns_step and ns_step > 0 then
+      local n   = math.max(2, math.floor(1.0 / ns_step + 0.5))
+      local cur = reaper.TrackFX_GetParamNormalized(track, fx, param)
+      local cur_i   = clamp(math.floor(cur / ns_step + 0.5), 0, n - 1)
+      local cur_norm = cur_i / math.max(n - 1, 1)
+      if not check_engaged(knob, cc_val, cur_norm) then return end
+      local target_i = clamp(math.floor(cc_val / 127 * (n - 1) + 0.5), 0, n - 1)
+      if target_i ~= cur_i then
+        -- Set to centre of target step's range so REAPER reliably snaps to it
+        reaper.TrackFX_SetParamNormalized(track, fx, param,
+          clamp((target_i + 0.5) * ns_step, 0, 1))
+      end
+      return
     end
-    -- Soft takeover: express current step as 0-1 on the same pot scale
-    local cur_as_norm = (cur_i - 1) / math.max(n - 1, 1)
-    if not check_engaged(knob, cc_val, cur_as_norm) then return end
-    if target_i ~= cur_i then
-      reaper.TrackFX_SetParamNormalized(track, fx, param, step_norms[target_i])
+    -- Strategy 2: probed step_norms
+    if step_norms and #step_norms > 1 then
+      local n = #step_norms
+      local target_i = clamp(math.floor(cc_val / 127 * (n - 1) + 0.5) + 1, 1, n)
+      local cur = reaper.TrackFX_GetParamNormalized(track, fx, param)
+      local cur_i, best_d = 1, math.huge
+      for i, sn in ipairs(step_norms) do
+        local d = math.abs(cur - sn)
+        if d < best_d then best_d = d; cur_i = i end
+      end
+      local cur_as_norm = (cur_i - 1) / math.max(n - 1, 1)
+      if not check_engaged(knob, cc_val, cur_as_norm) then return end
+      if target_i ~= cur_i then
+        -- Midpoint of target step's range: more reliable than the lower boundary
+        local hi_bound = (target_i < n) and step_norms[target_i + 1] or 1.0
+        reaper.TrackFX_SetParamNormalized(track, fx, param,
+          clamp((step_norms[target_i] + hi_bound) * 0.5, 0, 1))
+      end
+      return
     end
-    return
   end
 
   if profile.knob_relative[knob] then
