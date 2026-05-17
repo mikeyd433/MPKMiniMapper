@@ -1151,33 +1151,19 @@ local function plugin_bank_apply(knob,cc_val,track,bank_id)
   local hi=profile.knob_max[knob] or 1
 
   -- Stepped parameter: zone mapping with soft takeover.
-  -- Strategy 1 — always try REAPER's native TrackFX_GetParameterStepSizes first.
-  --   Works without probing. The 0-127 pot maps to N equal index zones so every
-  --   step is reachable regardless of how steps are distributed in normalized space.
-  -- Strategy 2 — probed step_norms: used when the plugin reports no native step size
-  --   (e.g. delay time as continuous ms/beats that still has discrete display values).
-  --   Sets to the exact probed norm value for reliable snap.
-  if not profile.knob_relative[knob] then
-    local ns_ok, ns_step = reaper.TrackFX_GetParameterStepSizes(track, fx, param)
-    if ns_ok and ns_step and ns_step > 0 then
-      local n      = math.max(2, math.floor(1.0 / ns_step + 0.5))
-      local cur    = reaper.TrackFX_GetParamNormalized(track, fx, param)
-      local cur_i  = clamp(math.floor(cur / ns_step + 0.5), 0, n - 1)
-      local cur_norm = cur_i / math.max(n - 1, 1)
-      if not check_engaged(knob, cc_val, cur_norm) then return end
-      local target_i = clamp(math.floor(cc_val / 127 * (n - 1) + 0.5), 0, n - 1)
-      if target_i ~= cur_i then
-        reaper.TrackFX_SetParamNormalized(track, fx, param,
-          clamp((target_i + 0.5) * ns_step, 0, 1))
-      end
-      return
-    end
-  end
-  -- Strategy 2: probed step_norms (user clicked "Probe" for this knob).
-  -- knob_step_norms keys are integers after the JSON round-trip fix in load_config.
+  -- Priority: probed step_norms beat native step sizes because the probe captures
+  -- the actual distribution of steps (e.g. logarithmic musical timing values),
+  -- whereas native step size only reports the minimum step and gives a wrong step
+  -- count for unevenly-spaced parameters.
+  --
+  -- Strategy A — probed (user clicked "Probe"): 0-127 maps to N equal index zones,
+  --   one per discovered step.  Sets the exact probed norm position.
+  -- Strategy B — native (TrackFX_GetParameterStepSizes): fallback for un-probed
+  --   knobs whose plugin reports a uniform step size.  Sets exact step position.
   local step_norms = profile.knob_step_norms and profile.knob_step_norms[knob]
   if profile.knob_stepped and profile.knob_stepped[knob]
       and step_norms and #step_norms > 1 then
+    -- Strategy A: probe-based
     local n        = #step_norms
     local target_i = clamp(math.floor(cc_val / 127 * (n - 1) + 0.5) + 1, 1, n)
     local cur      = reaper.TrackFX_GetParamNormalized(track, fx, param)
@@ -1192,6 +1178,24 @@ local function plugin_bank_apply(knob,cc_val,track,bank_id)
       reaper.TrackFX_SetParamNormalized(track, fx, param, step_norms[target_i])
     end
     return
+  end
+  if not profile.knob_relative[knob] then
+    -- Strategy B: native step size (no probing required)
+    local ns_ok, ns_step = reaper.TrackFX_GetParameterStepSizes(track, fx, param)
+    if ns_ok and ns_step and ns_step > 0 then
+      local n      = math.max(2, math.floor(1.0 / ns_step + 0.5))
+      local cur    = reaper.TrackFX_GetParamNormalized(track, fx, param)
+      local cur_i  = clamp(math.floor(cur / ns_step + 0.5), 0, n - 1)
+      local cur_norm = cur_i / math.max(n - 1, 1)
+      if not check_engaged(knob, cc_val, cur_norm) then return end
+      local target_i = clamp(math.floor(cc_val / 127 * (n - 1) + 0.5), 0, n - 1)
+      if target_i ~= cur_i then
+        -- Exact step position (avoids equidistant rounding at step 0)
+        reaper.TrackFX_SetParamNormalized(track, fx, param,
+          clamp(target_i * ns_step, 0, 1))
+      end
+      return
+    end
   end
 
   if profile.knob_relative[knob] then
