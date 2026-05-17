@@ -221,100 +221,78 @@ local PLUGIN_NAME_TABLE = {
 
 -- Each slot is a list of synonym keywords tried in order for that knob position.
 -- This matches the spec's intent: one slot per knob, multiple alternatives per slot.
+-- Rule: only multi-word compound terms or specific technical abbreviations (RT60, BPM, etc.)
+-- Single generic words ("Time","Size","Color","Level","Rate") match too many unrelated params.
 local PARAM_PRIORITIES = {
   Reverb={
-    -- K1: wet/dry mix
-    {"Wet","Mix","Effect Level","Rev Level","Return","Reverb Mix","Blend","FX Mix","Wet Level","Wet Gain"},
-    -- K2: room/space size
-    {"Room","Size","Space","Scale","Large","Hall","Chamber","Plate","Area","Dimension","Verb Size"},
-    -- K3: decay / reverb time
-    {"Decay","RT60","T60","Reverb Time","Tail","Decay Time","Release","Time","Length","Sustain"},
-    -- K4: pre-delay
-    {"Pre-delay","Predelay","Pre Delay","Pre-Delay","Early Delay","Initial Delay","Initial"},
-    -- K5: high-freq damping / color
-    {"Damping","Damp","HF Damp","High Damp","HF Mult","Rolloff","Cutoff","Absorption","Brightness","Color","Warmth","Air","High Freq","Tilt"},
-    -- K6: diffusion / density / early energy
-    {"Diffusion","Density","Spread","Scatter","Early Mix","Early","Buildup","Cross"},
-    -- K7: low-cut / high-pass
-    {"Low Cut","Low Freq","HP Freq","Highpass","Bass","Low Shelf","LF","Lo Cut","LoCut","HPF"},
-    -- K8: high-cut / low-pass
-    {"High Cut","High Freq","LP Freq","Lowpass","High Shelf","HF","Hi Cut","HiCut","LPF","Treble"},
+    {"Wet","Mix","Wet Mix","Wet/Dry","Reverb Mix","Effect Level","Wet Level","Rev Level"},
+    {"Room Size","Room","Hall","Chamber","Plate","Reverb Size","Space Size"},
+    {"Decay","RT60","Reverb Time","Decay Time","T60","Tail Time"},
+    {"Pre-delay","Pre-Delay","Predelay","Pre Delay","Early Delay","Initial Delay","PreDelay"},
+    {"Damping","Damp","HF Damp","High Damp","HF Mult","LF Mult","Hi Damp","Hi Frequency Damp"},
+    {"Diffusion","Density","Early Mix","Early Size","Early Diffusion","Scatter"},
+    {"Low Cut","Lo Cut","LoCut","HP Freq","Highpass","Low Shelf","Low Freq"},
+    {"High Cut","Hi Cut","HiCut","LP Freq","Lowpass","High Shelf","High Freq"},
   },
   Delay={
-    -- K1: wet/dry mix
-    {"Wet","Mix","Wet Level","Effect Level","Blend","Return","Volume","Delay Level","Rev","Delay Mix"},
-    -- K2: delay time (matches ms, musical, samples variants)
-    {"Length","Time","Delay","BPM","Beat","Tempo","Note","Division","Timing","Taps","Lag"},
-    -- K3: feedback / regeneration
-    {"Feedback","Regen","Repeat","Echo","Recycle","FB","Loop"},
-    -- K4: high-cut / tone / damping
-    {"High Cut","Tone","Treble","Presence","HF Damp","Damping","Cutoff","Color","Bright","Rolloff","Air"},
-    -- K5: low-cut / bass
-    {"Low Cut","Bass","Low","LF","Lo Cut","LP Freq","Low Pass","High Pass","Filter"},
-    -- K6: modulation rate
-    {"Mod Rate","Modulation Rate","LFO Rate","Wobble","Chorus Rate","Spread","Flutter","Rate","Vibrato"},
-    -- K7: modulation depth
-    {"Mod Depth","Modulation Depth","LFO Depth","Chorus Depth","Depth","Detune","Waver","Chorus"},
-    -- K8: output / dry level
-    {"Output","Dry","Out Gain","Master","Gain","Out Level","Level"},
+    {"Wet","Wet Mix","Wet Level","Wet/Dry","Effect Level","Delay Mix","Dry/Wet"},
+    {"Length","Delay Time","BPM Sync","Note Length","Time (ms)","Delay (ms)","Time Left"},
+    {"Feedback","Regen","Repeat","Recycle","Regeneration","FB Level"},
+    {"High Cut","Hi Cut","HF Damp","Tone","Treble","Damping","High Damping"},
+    {"Low Cut","Lo Cut","Low Damp","LF Damp","Bass Cut"},
+    {"Mod Rate","Modulation Rate","LFO Rate","Wobble","Chorus Rate","Mod Speed"},
+    {"Mod Depth","Modulation Depth","LFO Depth","Chorus Depth","Mod Amount"},
+    {"Output","Out Gain","Out Level","Dry Level","Dry"},
   },
   Pan={
-    {"Width","Stereo Width","Stereo","Spread","Widen"},
-    {"Pan","Panning","Balance"},
-    {"Stereo Balance","Balance","Center"},
-    {"Left Gain","L Gain","Left","Left Level"},
-    {"Right Gain","R Gain","Right","Right Level"},
-    {"Rotation","Rotate"},
-    {"Divergence","Diverge"},
-    {"Mix","Output","Wet","Blend"},
+    {"Width","Stereo Width","Stereo Spread","Widen","Width Amount"},
+    {"Pan","Panning","Pan Position"},
+    {"Stereo Balance","Balance","Stereo Pos"},
+    {"Left Gain","L Gain","Left Level","Left Out"},
+    {"Right Gain","R Gain","Right Level","Right Out"},
+    {"Rotation","Rotate","Azimuth"},
+    {"Divergence","Diverge","Center"},
+    {"Mix","Wet","Blend","Output"},
   },
   EQ={
-    -- K1: low shelf
-    {"Low Shelf","Low Gain","Bass Gain","Bass","Low Boost","LF Gain","Low EQ"},
-    -- K2: high shelf
-    {"High Shelf","High Gain","Treble Gain","Treble","High Boost","HF Gain","High EQ","Air"},
-    -- K3: low-pass / high-cut
-    {"Low Pass","LP Freq","Lowpass","Lo Cut","Low Cut","LoCut","Lowcut","LPF","Lo Freq","High Frequency Cut","High Cut Freq"},
-    -- K4: high-pass / low-cut
-    {"High Pass","HP Freq","Highpass","Hi Cut","High Cut","HiCut","Highcut","HPF","Hi Freq","Low Frequency Cut","Low Cut Freq"},
-    -- K5: mid frequency
-    {"Mid Freq","Peak Freq","Bell Freq","Mid","Center Freq","Frequency","Peak","Band Freq"},
-    -- K6: mid gain
-    {"Mid Gain","Peak Gain","Bell Gain","Mid Level","Band Gain"},
-    -- K7: Q / bandwidth
-    {"Mid Q","Peak Q","Q","Bandwidth","BW","Width","Band Q"},
-    -- K8: output gain
-    {"Output","Out Gain","Master Gain","Volume","Level","Gain"},
+    {"Low Shelf","Low Shelf Gain","Bass Shelf","LF Shelf Gain","Low Boost","Low EQ"},
+    {"High Shelf","High Shelf Gain","Treble Shelf","HF Shelf Gain","High Boost","High EQ"},
+    {"Low Pass","LP Freq","Low Pass Freq","Lowpass","Lo Cut","Low Cut","LoCut","Lowcut","LPF"},
+    {"High Pass","HP Freq","High Pass Freq","Highpass","Hi Cut","High Cut","HiCut","Highcut","HPF"},
+    {"Mid Freq","Peak Freq","Bell Freq","Mid Frequency","Band Freq","Center Freq"},
+    {"Mid Gain","Peak Gain","Bell Gain","Mid Band Gain","Band Gain"},
+    {"Mid Q","Peak Q","Bell Q","Band Q","Bandwidth","BW"},
+    {"Output Gain","Out Gain","Master Gain","Output Level"},
   },
   Distortion={
-    {"Drive","Amount","Gain","Clip","Crush","Bit","Overdrive","Saturation","Crunch"},
-    {"Tone","Tilt","Color","Character"},
-    {"Output","Out Level","Out Gain","Volume","Level","Master"},
-    {"Wet","Mix","Blend","Effect"},
-    {"Bass","Low","LF","Low Boost","Body"},
-    {"Treble","Presence","High","Air","Sparkle"},
-    {"Gate","Noise Gate","Threshold","Noise"},
-    {"Bias","Asymmetry","Shape","Warp"},
+    {"Drive","Overdrive","Saturation","Clip Level","Crush","Bit Crush","Input Gain"},
+    {"Tone","Character","Color","Tilt EQ"},
+    {"Output","Out Level","Out Gain","Output Level"},
+    {"Wet","Wet Mix","Effect Mix","Mix","Blend"},
+    {"Bass","Bass Boost","Low Boost","Body","Low Freq"},
+    {"Treble","Presence","High Boost","High Freq"},
+    {"Gate","Noise Gate","Gate Threshold","Noise Floor"},
+    {"Bias","Asymmetry","DC Offset"},
   },
   Modulation={
-    {"Rate","Speed","Frequency","LFO","Tempo"},
-    {"Depth","Amount","Intensity","Swing","Excursion"},
-    {"Wet","Mix","Blend","Effect"},
-    {"Feedback","Regen","Resonance","Regeneration"},
-    {"Width","Stereo Width","Spread","Phase","Stereo"},
-    {"Phase","Phase Offset","Offset"},
-    {"Waveform","LFO Shape","Wave","Shape"},
-    {"Dry","Output","Out Gain","Level"},
+    {"LFO Rate","Mod Rate","Modulation Rate","Chorus Rate","Mod Speed","Wobble Rate","Flange Rate"},
+    {"Mod Depth","Modulation Depth","Chorus Depth","LFO Depth","Mod Amount","Depth Amount"},
+    {"Wet","Mix","Wet Mix","Wet/Dry","Effect Mix"},
+    {"Feedback","Regen","Resonance","Regeneration","FB"},
+    {"Stereo Width","Width","Stereo Spread","Spread"},
+    {"Phase","Phase Offset","Stereo Phase","LFO Phase"},
+    {"Waveform","LFO Shape","LFO Waveform","Mod Shape"},
+    {"Output","Out Gain","Dry","Dry Level"},
   },
   Instrument={
-    {"Volume","Level","Master","Output","Gain"},
-    {"Cutoff","Filter Cutoff","Filter Freq","Filter","Brightness"},
-    {"Resonance","Filter Res","Reso","Q"},
-    {"Attack","Env A","Amp Attack"},
-    {"Decay","Env D","Amp Decay"},
-    {"Sustain","Env S","Amp Sustain"},
-    {"Release","Env R","Amp Release"},
-    {"Velocity","Vel Sens","Vel Depth","Vel"},
+    {"Volume","Master Volume","Output Level","Master Level"},
+    {"Cutoff","Filter Cutoff","Filter Freq","Filter Frequency"},
+    {"Resonance","Filter Res","Filter Q","Reso"},
+    {"Attack","Amp Attack","Env Attack","Volume Attack"},
+    {"Decay","Amp Decay","Env Decay","Volume Decay"},
+    {"Sustain","Amp Sustain","Env Sustain","Volume Sustain"},
+    {"Release","Amp Release","Env Release","Volume Release"},
+    {"Velocity","Vel Sens","Vel Depth","Velocity Sens"},
   },
 }
 
@@ -2208,18 +2186,27 @@ local function draw_param_panel(x,y,w,h)
   end
 
   -- Re-fill: re-run keyword matching against the plugin for plugin banks only.
-  -- Useful when auto-fill ran before the synonym list was complete (e.g. Lo Cut / Hi Cut).
+  -- Useful when auto-fill ran before the synonym list was complete.
   local bdef_rf=S.bank_defs[S.active_bank]
   local cat=bdef_rf and bdef_rf.category
   if cat and S.last_track and profile then
     local rfx,rpname=find_fx_for_bank(S.last_track,bdef_rf)
     if rfx then
-      if btn(x+6,cy,w-12,22,"Re-auto-fill all knobs") then
+      local half=math.floor((w-16)/2)
+      if btn(x+6,cy,half,22,"Re-auto-fill all knobs") then
         autofill_params(profile,S.last_track,rfx,cat)
         profile.confirmed=false
         S.config_dirty=true
         refresh_knob_labels(S.last_track)
         status("Re-filled: "..rpname)
+      end
+      -- Clear profile: wipe all assignments so fresh autofill runs on next bank visit.
+      if btn(x+10+half,cy,half,22,"Clear profile",{0.45,0.2,0.2}) then
+        local key=prof_key(rpname,S.active_bank)
+        S.plugin_profiles[key]=nil
+        S.config_dirty=true
+        refresh_knob_labels(S.last_track)
+        status("Profile cleared — will re-autofill on next use")
       end
     end
   end
