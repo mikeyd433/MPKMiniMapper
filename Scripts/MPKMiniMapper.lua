@@ -1314,14 +1314,20 @@ end
 -- Extracted to module scope so it can be re-applied after JSFX setup,
 -- which is known to reset I_RECSRC in some REAPER builds.
 -- I_RECSRC bit layout per REAPER SDK:
---   bit 12 (0x1000 = 4096) = MIDI record source flag
---   bits 5-9  = (device_index + 1)  where 0 = all devices
---   bits 0-4  = channel (0 = all channels)
+--   bit 12 (0x1000 = 4096) = MIDI input flag
+--   bits 5-11 = device index (0x3f = all devices)
+--   bits 0-4  = channel - 1  (0x1f = all channels)
+-- I_RECMODE 5 = MIDI input (required so REAPER treats I_RECSRC as MIDI)
 local function apply_midi_routing(t)
   local dev=find_mpk_mini()
-  local recsrc=0x1000                         -- all MIDI devices, all channels
-  if dev>=0 then recsrc=0x1000|((dev+1)<<5) end
+  -- "all MIDI devices, all channels" sentinel: device bits = 0x3f, channel bits = 0x1f
+  local recsrc=0x1000|(0x3f<<5)|0x1f          -- 0x17FF = 6143
+  if dev>=0 then
+    -- Lock to the specific MPK Mini device index, all channels
+    recsrc=0x1000|(dev<<5)|0x1f
+  end
   S.recsrc_target=recsrc
+  reaper.SetMediaTrackInfo_Value(t,"I_RECMODE",5)  -- MIDI input mode
   reaper.SetMediaTrackInfo_Value(t,"I_RECSRC",recsrc)
   reaper.SetMediaTrackInfo_Value(t,"I_RECARM",1)
   reaper.SetMediaTrackInfo_Value(t,"I_RECMON",1)
@@ -1453,9 +1459,12 @@ local function process_midi_event(msg1,msg2,msg3,track)
         break
       end
     end
-    -- Re-emit CCs that don't belong to any knob so other REAPER routing still works.
-    -- Knob CCs are intentionally swallowed — Lua drives those parameters directly.
-    if not knob_matched then reaper.StuffMIDIMessage(0,msg1,msg2,msg3) end
+    -- Unmatched CCs are silently discarded rather than re-emitted.
+    -- Re-emitting via StuffMIDIMessage(0,...) routes through REAPER's virtual
+    -- keyboard (device 0), which reaches any armed track receiving "all MIDI inputs"
+    -- and can trigger CC Learns inside plugins unintentionally.  It also feeds back
+    -- through our own JSFX when I_RECSRC=0 (all inputs).  All knob CCs that need
+    -- to do useful work are already handled by the matched-knob branch above.
     return
   end
 
