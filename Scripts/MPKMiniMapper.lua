@@ -223,74 +223,98 @@ local PLUGIN_NAME_TABLE = {
 -- This matches the spec's intent: one slot per knob, multiple alternatives per slot.
 local PARAM_PRIORITIES = {
   Reverb={
-    {"Wet","Mix"},
-    {"Room Size","Room"},
-    {"Decay","RT60","Reverb Time","Tail"},
-    {"Pre-delay","Predelay","Pre Delay"},
-    {"Damping","Damp"},
-    {"Diffusion"},
-    {"Low Cut","Low Freq","HP Freq","Highpass"},
-    {"High Cut","High Freq","LP Freq","Lowpass"},
+    -- K1: wet/dry mix
+    {"Wet","Mix","Effect Level","Rev Level","Return","Reverb Mix","Blend","FX Mix","Wet Level","Wet Gain"},
+    -- K2: room/space size
+    {"Room","Size","Space","Scale","Large","Hall","Chamber","Plate","Area","Dimension","Verb Size"},
+    -- K3: decay / reverb time
+    {"Decay","RT60","T60","Reverb Time","Tail","Decay Time","Release","Time","Length","Sustain"},
+    -- K4: pre-delay
+    {"Pre-delay","Predelay","Pre Delay","Pre-Delay","Early Delay","Initial Delay","Initial"},
+    -- K5: high-freq damping / color
+    {"Damping","Damp","HF Damp","High Damp","HF Mult","Rolloff","Cutoff","Absorption","Brightness","Color","Warmth","Air","High Freq","Tilt"},
+    -- K6: diffusion / density / early energy
+    {"Diffusion","Density","Spread","Scatter","Early Mix","Early","Buildup","Cross"},
+    -- K7: low-cut / high-pass
+    {"Low Cut","Low Freq","HP Freq","Highpass","Bass","Low Shelf","LF","Lo Cut","LoCut","HPF"},
+    -- K8: high-cut / low-pass
+    {"High Cut","High Freq","LP Freq","Lowpass","High Shelf","HF","Hi Cut","HiCut","LPF","Treble"},
   },
   Delay={
-    {"Wet/Dry","Dry/Wet","Wet Mix","Effect Level","Blend","Mix"},
-    {"Time","BPM"},
-    {"Feedback","Regen"},
-    {"High Cut","Tone","Treble"},
-    {"Low Cut","Bass"},
-    {"Mod Rate","Modulation Rate","LFO Rate"},
-    {"Mod Depth","Modulation Depth","LFO Depth"},
-    {"Dry","Output"},
+    -- K1: wet/dry mix
+    {"Wet","Mix","Wet Level","Effect Level","Blend","Return","Volume","Delay Level","Rev","Delay Mix"},
+    -- K2: delay time (matches ms, musical, samples variants)
+    {"Length","Time","Delay","BPM","Beat","Tempo","Note","Division","Timing","Taps","Lag"},
+    -- K3: feedback / regeneration
+    {"Feedback","Regen","Repeat","Echo","Recycle","FB","Loop"},
+    -- K4: high-cut / tone / damping
+    {"High Cut","Tone","Treble","Presence","HF Damp","Damping","Cutoff","Color","Bright","Rolloff","Air"},
+    -- K5: low-cut / bass
+    {"Low Cut","Bass","Low","LF","Lo Cut","LP Freq","Low Pass","High Pass","Filter"},
+    -- K6: modulation rate
+    {"Mod Rate","Modulation Rate","LFO Rate","Wobble","Chorus Rate","Spread","Flutter","Rate","Vibrato"},
+    -- K7: modulation depth
+    {"Mod Depth","Modulation Depth","LFO Depth","Chorus Depth","Depth","Detune","Waver","Chorus"},
+    -- K8: output / dry level
+    {"Output","Dry","Out Gain","Master","Gain","Out Level","Level"},
   },
   Pan={
-    {"Width","Stereo Width"},
-    {"Pan"},
-    {"Stereo Balance","Balance"},
-    {"Left Gain","L Gain"},
-    {"Right Gain","R Gain"},
-    {"Rotation"},
-    {"Divergence"},
-    {"Mix","Output"},
+    {"Width","Stereo Width","Stereo","Spread","Widen"},
+    {"Pan","Panning","Balance"},
+    {"Stereo Balance","Balance","Center"},
+    {"Left Gain","L Gain","Left","Left Level"},
+    {"Right Gain","R Gain","Right","Right Level"},
+    {"Rotation","Rotate"},
+    {"Divergence","Diverge"},
+    {"Mix","Output","Wet","Blend"},
   },
   EQ={
-    {"Low Shelf Gain","Low Gain","Bass Gain"},
-    {"High Shelf Gain","High Gain","Treble Gain"},
-    {"Low Pass","LP Freq","Lowpass","Lo Cut","Low Cut","LoCut","Lowcut","LPF","Lo Freq"},
-    {"High Pass","HP Freq","Highpass","Hi Cut","High Cut","HiCut","Highcut","HPF","Hi Freq"},
-    {"Mid Freq","Peak Freq","Bell Freq"},
-    {"Mid Gain","Peak Gain","Bell Gain"},
-    {"Mid Q","Peak Q","Q"},
-    {"Output","Out Gain","Master Gain"},
+    -- K1: low shelf
+    {"Low Shelf","Low Gain","Bass Gain","Bass","Low Boost","LF Gain","Low EQ"},
+    -- K2: high shelf
+    {"High Shelf","High Gain","Treble Gain","Treble","High Boost","HF Gain","High EQ","Air"},
+    -- K3: low-pass / high-cut
+    {"Low Pass","LP Freq","Lowpass","Lo Cut","Low Cut","LoCut","Lowcut","LPF","Lo Freq","High Frequency Cut","High Cut Freq"},
+    -- K4: high-pass / low-cut
+    {"High Pass","HP Freq","Highpass","Hi Cut","High Cut","HiCut","Highcut","HPF","Hi Freq","Low Frequency Cut","Low Cut Freq"},
+    -- K5: mid frequency
+    {"Mid Freq","Peak Freq","Bell Freq","Mid","Center Freq","Frequency","Peak","Band Freq"},
+    -- K6: mid gain
+    {"Mid Gain","Peak Gain","Bell Gain","Mid Level","Band Gain"},
+    -- K7: Q / bandwidth
+    {"Mid Q","Peak Q","Q","Bandwidth","BW","Width","Band Q"},
+    -- K8: output gain
+    {"Output","Out Gain","Master Gain","Volume","Level","Gain"},
   },
   Distortion={
-    {"Drive","Amount","Gain"},
-    {"Tone"},
-    {"Output","Out Level","Volume"},
-    {"Wet","Mix"},
-    {"Bass"},
-    {"Treble","Presence"},
-    {"Gate","Noise Gate"},
-    {"Bias"},
+    {"Drive","Amount","Gain","Clip","Crush","Bit","Overdrive","Saturation","Crunch"},
+    {"Tone","Tilt","Color","Character"},
+    {"Output","Out Level","Out Gain","Volume","Level","Master"},
+    {"Wet","Mix","Blend","Effect"},
+    {"Bass","Low","LF","Low Boost","Body"},
+    {"Treble","Presence","High","Air","Sparkle"},
+    {"Gate","Noise Gate","Threshold","Noise"},
+    {"Bias","Asymmetry","Shape","Warp"},
   },
   Modulation={
-    {"Rate","Speed","Frequency"},
-    {"Depth","Amount","Intensity"},
-    {"Wet","Mix"},
-    {"Feedback","Regen"},
-    {"Width","Stereo Width","Spread"},
-    {"Phase","Phase Offset"},
-    {"Waveform","LFO Shape","Wave"},
-    {"Dry","Output"},
+    {"Rate","Speed","Frequency","LFO","Tempo"},
+    {"Depth","Amount","Intensity","Swing","Excursion"},
+    {"Wet","Mix","Blend","Effect"},
+    {"Feedback","Regen","Resonance","Regeneration"},
+    {"Width","Stereo Width","Spread","Phase","Stereo"},
+    {"Phase","Phase Offset","Offset"},
+    {"Waveform","LFO Shape","Wave","Shape"},
+    {"Dry","Output","Out Gain","Level"},
   },
   Instrument={
-    {"Volume","Level","Master","Output"},
-    {"Cutoff","Filter Cutoff","Filter Freq"},
-    {"Resonance","Filter Res","Reso"},
+    {"Volume","Level","Master","Output","Gain"},
+    {"Cutoff","Filter Cutoff","Filter Freq","Filter","Brightness"},
+    {"Resonance","Filter Res","Reso","Q"},
     {"Attack","Env A","Amp Attack"},
     {"Decay","Env D","Amp Decay"},
     {"Sustain","Env S","Amp Sustain"},
     {"Release","Env R","Amp Release"},
-    {"Velocity","Vel Sens","Vel Depth"},
+    {"Velocity","Vel Sens","Vel Depth","Vel"},
   },
 }
 
@@ -688,6 +712,60 @@ local function autofill_params(profile,track,fx_idx,category)
   end
 end
 
+-- Probe a plugin parameter at 64 evenly-spaced normalized values.
+-- Returns: eff_min, eff_max, is_stepped, step_norms
+--   eff_min / eff_max  : first/last norm where the parameter actually changes
+--                         (skips dead zones at the bottom/top)
+--   is_stepped         : true if the parameter has ≤ 24 distinct values
+--   step_norms         : sorted list of normalized values for each discrete step (or nil)
+-- NOTE: briefly modifies the parameter then restores it — use while not playing.
+local function probe_param_range(track, fx, param)
+  local NPTS = 64
+  local saved = reaper.TrackFX_GetParamNormalized(track, fx, param)
+  local samples = {}
+  for i = 0, NPTS do
+    local norm = i / NPTS
+    reaper.TrackFX_SetParamNormalized(track, fx, param, norm)
+    local v = reaper.TrackFX_GetParam(track, fx, param)
+    samples[i] = v
+  end
+  reaper.TrackFX_SetParamNormalized(track, fx, param, saved)
+
+  local full_range = math.abs(samples[NPTS] - samples[0])
+  local tol = full_range * 0.01 + 1e-6
+
+  -- Effective min: first norm where value diverges from samples[0]
+  local eff_min = 0
+  for i = 1, NPTS do
+    if math.abs(samples[i] - samples[0]) > tol then eff_min = (i-1)/NPTS; break end
+  end
+
+  -- Effective max: last norm where value diverges from samples[NPTS]
+  local eff_max = 1
+  for i = NPTS-1, 0, -1 do
+    if math.abs(samples[i] - samples[NPTS]) > tol then eff_max = (i+1)/NPTS; break end
+  end
+
+  -- Detect stepped: collect unique actual values
+  local step_tol = full_range * 0.005 + 1e-7
+  local uniq = {}
+  for i = 0, NPTS do
+    local v = samples[i]
+    local new = true
+    for _, u in ipairs(uniq) do if math.abs(u[1]-v) < step_tol then new=false; break end end
+    if new then uniq[#uniq+1] = {v, i/NPTS} end
+  end
+  table.sort(uniq, function(a,b) return a[2]<b[2] end)
+
+  local is_stepped = #uniq >= 2 and #uniq <= 24
+  local step_norms = nil
+  if is_stepped then
+    step_norms = {}
+    for _, u in ipairs(uniq) do step_norms[#step_norms+1] = u[2] end
+  end
+  return eff_min, eff_max, is_stepped, step_norms
+end
+
 local function get_profile(plugin_name,bank_id,track,fx_idx)
   local key=prof_key(plugin_name,bank_id)
   if S.plugin_profiles[key] then return S.plugin_profiles[key] end
@@ -703,6 +781,8 @@ local function get_profile(plugin_name,bank_id,track,fx_idx)
     drum_pad_notes  ={-1,-1,-1,-1,-1,-1,-1,-1},
     drum_pad_labels ={"","","","","","","",""},
     confirmed       =false,
+    knob_stepped    ={false,false,false,false,false,false,false,false},
+    knob_step_norms ={},
   }
 
   local cat=S.bank_defs[bank_id] and S.bank_defs[bank_id].category
@@ -984,6 +1064,27 @@ local function plugin_bank_apply(knob,cc_val,track,bank_id)
   local norm=cc_norm(cc_val)
   local lo=profile.knob_min[knob] or 0
   local hi=profile.knob_max[knob] or 1
+
+  -- Stepped parameter: use direction-based step control instead of absolute CC position.
+  -- Each knob turn increments or decrements the step index by one.
+  local step_norms = profile.knob_step_norms and profile.knob_step_norms[knob]
+  if profile.knob_stepped and profile.knob_stepped[knob] and step_norms and #step_norms > 1 then
+    local prev  = S.last_cc_raw[knob]
+    local delta = cc_val - prev
+    if math.abs(delta) < 2 then return end  -- ignore jitter
+    local dir   = delta > 0 and 1 or -1
+    local cur   = reaper.TrackFX_GetParamNormalized(track, fx, param)
+    local best_i, best_d = 1, math.huge
+    for i, sn in ipairs(step_norms) do
+      local d = math.abs(cur - sn)
+      if d < best_d then best_d = d; best_i = i end
+    end
+    local new_i = clamp(best_i + dir, 1, #step_norms)
+    if new_i ~= best_i then
+      reaper.TrackFX_SetParamNormalized(track, fx, param, step_norms[new_i])
+    end
+    return
+  end
 
   if profile.knob_relative[knob] then
     -- Relative mode: accumulate delta from previous CC value; no soft takeover needed.
@@ -2042,8 +2143,40 @@ local function draw_param_panel(x,y,w,h)
     if new_max~=profile.knob_max[k] then profile.knob_max[k]=new_max; S.config_dirty=true end
   end
 
+  -- Probe button: auto-detect effective range and step structure
+  local bdef_probe=S.bank_defs[S.active_bank]
+  local cat_probe=bdef_probe and bdef_probe.category
+  if profile and cat_probe and S.last_track then
+    local pfx_probe,_=find_fx_for_bank(S.last_track,bdef_probe)
+    local pidx=profile.knob_params[k]
+    if pfx_probe and pidx and pidx>=0 then
+      if not profile.knob_stepped then profile.knob_stepped={false,false,false,false,false,false,false,false} end
+      if not profile.knob_step_norms then profile.knob_step_norms={} end
+      local is_stepped=profile.knob_stepped[k]
+      local nsteps=is_stepped and profile.knob_step_norms[k] and #profile.knob_step_norms[k] or 0
+      local probe_lbl=is_stepped and ("Stepped ("..nsteps.." steps)") or "Probe Range / Steps"
+      local probe_col=is_stepped and {0.25,0.55,0.35} or nil
+      if btn(x+6,sy+18,w-12,16,probe_lbl,probe_col) then
+        local emin,emax,stepped,snorms=probe_param_range(S.last_track,pfx_probe,pidx)
+        profile.knob_min[k]=emin; profile.knob_max[k]=emax
+        profile.knob_stepped[k]=stepped
+        profile.knob_step_norms[k]=snorms
+        S.config_dirty=true; reset_knob_engagement()
+        if stepped then status("Stepped: "..#snorms.." discrete values")
+        else status(string.format("Range probed: %.3f \xe2\x80\x93 %.3f",emin,emax)) end
+      end
+      -- Allow toggling stepped off manually
+      if is_stepped then
+        if btn(x+6,sy+36,w-12,14,"Clear stepped (use absolute)",{0.4,0.3,0.3}) then
+          profile.knob_stepped[k]=false; profile.knob_step_norms[k]=nil
+          S.config_dirty=true; status("K"..k.." back to absolute mode")
+        end
+      end
+    end
+  end
+
   -- Relative/Absolute toggle
-  local sy2=y+162
+  local sy2=y+188
   if profile then
     local rel=profile.knob_relative[k]
     if btn(x+6,sy2,100,20,rel and "Relative" or "Absolute",rel and CA or nil) then
