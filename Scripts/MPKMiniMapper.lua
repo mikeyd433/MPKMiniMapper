@@ -707,56 +707,95 @@ local function autofill_params(profile,track,fx_idx,category)
   end
 end
 
--- Probe a plugin parameter at 64 evenly-spaced normalized values.
+-- Probe a plugin parameter using adaptive recursive subdivision.
 -- Returns: eff_min, eff_max, is_stepped, step_norms
---   eff_min / eff_max  : first/last norm where the parameter actually changes
---                         (skips dead zones at the bottom/top)
---   is_stepped         : true if the parameter has ≤ 24 distinct values
---   step_norms         : sorted list of normalized values for each discrete step (or nil)
+--
+-- Phase 1: 64 uniform samples capture the gross shape.
+-- Phase 2: each interval where the value changed is recursively halved until
+--          the sub-interval is < 1/8192 (≈0.012%) of the full range.  This
+--          correctly finds every discrete step no matter how densely packed —
+--          including musical-timing parameters whose steps get progressively
+--          finer toward zero (e.g. whole → half → quarter → triplet …).
+--
 -- NOTE: briefly modifies the parameter then restores it — use while not playing.
 local function probe_param_range(track, fx, param)
-  local NPTS = 64
+  local NPTS      = 64          -- initial coarse pass
+  local MIN_SPAN  = 1 / 8192   -- stop subdividing below this norm width
+  local MAX_STEPS = 512         -- safety cap (prevents runaway on continuous params)
+
   local saved = reaper.TrackFX_GetParamNormalized(track, fx, param)
-  local samples = {}
-  for i = 0, NPTS do
-    local norm = i / NPTS
-    reaper.TrackFX_SetParamNormalized(track, fx, param, norm)
-    local v = reaper.TrackFX_GetParam(track, fx, param)
-    samples[i] = v
+
+  local function samp(norm)
+    reaper.TrackFX_SetParamNormalized(track, fx, param, clamp(norm,0,1))
+    return reaper.TrackFX_GetParam(track, fx, param)
   end
+
+  -- Phase 1: coarse uniform samples
+  local coarse = {}
+  for i = 0, NPTS do coarse[i] = samp(i / NPTS) end
+
+  -- Phase 2: adaptive subdivision — collect every unique (norm, actual_val) pair.
+  -- Stored in a flat list; we push lo-val at norm=0 once, then push hi-val whenever
+  -- a new step boundary is found in the recursion.
+  local found = {{0, coarse[0]}}
+
+  local function subdivide(lo_n, lo_v, hi_n, hi_v, depth)
+    -- Stop if values are the same (no step in this interval) or interval too small
+    if math.abs(hi_v - lo_v) < 1e-9 then return end
+    if (hi_n - lo_n) < MIN_SPAN or depth > 14 then
+      -- Transition detected — record the hi end (the start of the new step)
+      if #found < MAX_STEPS then found[#found+1] = {hi_n, hi_v} end
+      return
+    end
+    local mid_n = (lo_n + hi_n) * 0.5
+    local mid_v = samp(mid_n)
+    subdivide(lo_n, lo_v, mid_n, mid_v, depth+1)
+    subdivide(mid_n, mid_v, hi_n, hi_v, depth+1)
+  end
+
+  for i = 1, NPTS do
+    subdivide((i-1)/NPTS, coarse[i-1], i/NPTS, coarse[i], 0)
+  end
+
   reaper.TrackFX_SetParamNormalized(track, fx, param, saved)
 
-  local full_range = math.abs(samples[NPTS] - samples[0])
-  local tol = full_range * 0.01 + 1e-6
+  -- Sort by norm position (subdivision order is depth-first, not sequential)
+  table.sort(found, function(a,b) return a[1]<b[1] end)
 
-  -- Effective min: first norm where value diverges from samples[0]
+  -- Deduplicate by actual value (handles floating-point near-duplicates)
+  local full_range = math.abs(coarse[NPTS] - coarse[0])
+  local val_tol = full_range * 0.0005 + 1e-9
+  local uniq = {found[1]}
+  for i = 2, #found do
+    local v = found[i][2]
+    if math.abs(v - uniq[#uniq][2]) > val_tol then
+      uniq[#uniq+1] = found[i]
+    end
+  end
+
+  -- Effective range (skip dead zones at both ends)
+  local range_tol = full_range * 0.005 + 1e-6
   local eff_min = 0
-  for i = 1, NPTS do
-    if math.abs(samples[i] - samples[0]) > tol then eff_min = (i-1)/NPTS; break end
+  for i = 2, #uniq do
+    if math.abs(uniq[i][2] - coarse[0]) > range_tol then
+      eff_min = uniq[i-1][1]; break
+    end
   end
-
-  -- Effective max: last norm where value diverges from samples[NPTS]
   local eff_max = 1
-  for i = NPTS-1, 0, -1 do
-    if math.abs(samples[i] - samples[NPTS]) > tol then eff_max = (i+1)/NPTS; break end
+  for i = #uniq-1, 1, -1 do
+    if math.abs(uniq[i][2] - coarse[NPTS]) > range_tol then
+      eff_max = uniq[i+1][1]; break
+    end
   end
 
-  -- Detect stepped: collect unique actual values
-  local step_tol = full_range * 0.005 + 1e-7
-  local uniq = {}
-  for i = 0, NPTS do
-    local v = samples[i]
-    local new = true
-    for _, u in ipairs(uniq) do if math.abs(u[1]-v) < step_tol then new=false; break end end
-    if new then uniq[#uniq+1] = {v, i/NPTS} end
-  end
-  table.sort(uniq, function(a,b) return a[2]<b[2] end)
-
-  local is_stepped = #uniq >= 2 and #uniq <= 24
+  -- A parameter is stepped if it has ≥ 2 and ≤ 512 distinct values.
+  -- (Continuous params produce hundreds of micro-variations that get deduped to 1.)
+  local n = #uniq
+  local is_stepped = n >= 2 and n <= MAX_STEPS
   local step_norms = nil
   if is_stepped then
     step_norms = {}
-    for _, u in ipairs(uniq) do step_norms[#step_norms+1] = u[2] end
+    for _, u in ipairs(uniq) do step_norms[#step_norms+1] = u[1] end
   end
   return eff_min, eff_max, is_stepped, step_norms
 end
@@ -1031,6 +1070,22 @@ local function plugin_bank_apply(knob,cc_val,track,bank_id)
   local profile=get_profile(pname,bank_id,track,fx)
   -- Ensure knob_defaults exists (profiles loaded from older config files may be missing it)
   if not profile.knob_defaults then profile.knob_defaults={0,0,0,0,0,0,0,0} end
+  -- One-time repair: clear duplicate param_idx assignments in profiles loaded from older
+  -- config files.  A duplicate means two knobs set the same parameter simultaneously,
+  -- appearing as one physical knob controlling two labelled parameters at once.
+  if not profile._deduped then
+    local seen={}
+    for k2=1,8 do
+      local p=profile.knob_params[k2]
+      if p and p>=0 then
+        if seen[p] then
+          profile.knob_params[k2]=-1; profile.knob_labels[k2]=""
+          S.config_dirty=true
+        else seen[p]=k2 end
+      end
+    end
+    profile._deduped=true
+  end
   local param=profile.knob_params[knob]
   if not param or param<0 then
     -- Lazy autofill: if this knob has no assignment yet, try to find one now using the
