@@ -389,7 +389,6 @@ local S = {
   last_cc_raw       = {64,64,64,64,64,64,64,64},  -- default to center for scrub
   knob_touched_time = {0,0,0,0,0,0,0,0},          -- time_precise() of last CC for each knob
   knob_engaged      = {false,false,false,false,false,false,false,false},  -- soft-takeover: true once knob has caught up to param
-  knob_stepped_accum= {},  -- per-knob CC delta accumulator for stepped params (transient, not saved)
   pending_mode      = nil,    -- set in button handlers; applied at start of next loop tick
 
   plugin_library    = {},
@@ -877,7 +876,7 @@ end
 -- ============================================================
 
 local function reset_knob_engagement()
-  for i=1,8 do S.knob_engaged[i]=false; S.knob_stepped_accum[i]=0 end
+  for i=1,8 do S.knob_engaged[i]=false end
 end
 
 -- Check soft takeover. cur_norm is the current param value expressed as 0-1
@@ -1123,40 +1122,29 @@ local function plugin_bank_apply(knob,cc_val,track,bank_id)
   local lo=profile.knob_min[knob] or 0
   local hi=profile.knob_max[knob] or 1
 
-  -- Stepped parameter: accumulate CC delta and advance exactly one step per
-  -- THRESH units accumulated.  The MPK Mini pots send consecutive absolute values
-  -- (delta = 1 per event), so a simple delta-threshold check would never fire.
-  -- THRESH is auto-scaled so a full 0→127 pot sweep covers the entire step range.
-  -- Pot extremes (0 and 127) snap directly to first/last step so the limits are
-  -- always reachable regardless of accumulator leftover or step count.
+  -- Stepped parameter: direct zone mapping with soft takeover.
+  -- The 0-127 pot range is divided into N equal zones (one per detected step).
+  -- cc_val maps linearly to a step index so every step is reachable from any
+  -- physical pot position, the same way a continuous param works.
+  -- Soft takeover prevents jumps: the knob must reach the zone that corresponds
+  -- to the current step before it takes over.  No accumulator needed.
   local step_norms = profile.knob_step_norms and profile.knob_step_norms[knob]
   if profile.knob_stepped and profile.knob_stepped[knob] and step_norms and #step_norms > 1 then
-    -- Pot at physical extremes → snap directly; no accumulator arithmetic can block these
-    if cc_val == 127 then
-      reaper.TrackFX_SetParamNormalized(track, fx, param, step_norms[#step_norms])
-      S.knob_stepped_accum[knob] = 0; return
-    end
-    if cc_val == 0 then
-      reaper.TrackFX_SetParamNormalized(track, fx, param, step_norms[1])
-      S.knob_stepped_accum[knob] = 0; return
-    end
-    local THRESH = math.max(1, math.floor(127 / #step_norms))
-    local delta  = cc_val - S.last_cc_raw[knob]
-    if delta == 0 then return end
-    S.knob_stepped_accum[knob] = (S.knob_stepped_accum[knob] or 0) + delta
-    if math.abs(S.knob_stepped_accum[knob]) < THRESH then return end
-    local dir = S.knob_stepped_accum[knob] > 0 and 1 or -1
-    -- Consume exactly one step's worth; keep remainder for next event
-    S.knob_stepped_accum[knob] = S.knob_stepped_accum[knob] - dir * THRESH
-    local cur   = reaper.TrackFX_GetParamNormalized(track, fx, param)
-    local best_i, best_d = 1, math.huge
+    local n = #step_norms
+    -- Map cc_val 0-127 → step index 1..n
+    local target_i = clamp(math.floor(cc_val / 127 * (n - 1) + 0.5) + 1, 1, n)
+    -- Find which step the parameter is currently on
+    local cur = reaper.TrackFX_GetParamNormalized(track, fx, param)
+    local cur_i, best_d = 1, math.huge
     for i, sn in ipairs(step_norms) do
       local d = math.abs(cur - sn)
-      if d < best_d then best_d = d; best_i = i end
+      if d < best_d then best_d = d; cur_i = i end
     end
-    local new_i = clamp(best_i + dir, 1, #step_norms)
-    if new_i ~= best_i then
-      reaper.TrackFX_SetParamNormalized(track, fx, param, step_norms[new_i])
+    -- Soft takeover: express current step as 0-1 on the same pot scale
+    local cur_as_norm = (cur_i - 1) / math.max(n - 1, 1)
+    if not check_engaged(knob, cc_val, cur_as_norm) then return end
+    if target_i ~= cur_i then
+      reaper.TrackFX_SetParamNormalized(track, fx, param, step_norms[target_i])
     end
     return
   end
