@@ -1150,16 +1150,22 @@ local function plugin_bank_apply(knob,cc_val,track,bank_id)
   local lo=profile.knob_min[knob] or 0
   local hi=profile.knob_max[knob] or 1
 
-  -- Stepped parameter: zone mapping with soft takeover.
-  -- Priority: probed step_norms beat native step sizes because the probe captures
-  -- the actual distribution of steps (e.g. logarithmic musical timing values),
-  -- whereas native step size only reports the minimum step and gives a wrong step
-  -- count for unevenly-spaced parameters.
-  --
-  -- Strategy A — probed (user clicked "Probe"): 0-127 maps to N equal index zones,
-  --   one per discovered step.  Sets the exact probed norm position.
-  -- Strategy B — native (TrackFX_GetParameterStepSizes): fallback for un-probed
-  --   knobs whose plugin reports a uniform step size.  Sets exact step position.
+  -- One-step-per-tick for stepped parameters: each CC event moves the parameter
+  -- exactly one step in the direction of knob travel. REAPER snaps automatically.
+  -- Works without probing. Falls through to absolute mode when ns_step == 0
+  -- (continuous parameter) or when relative mode is selected.
+  if not profile.knob_relative[knob] then
+    local ns_ok, ns_step, _, _, ns_toggle = reaper.TrackFX_GetParameterStepSizes(track, fx, param)
+    if ns_ok and ns_step and ns_step > 0 and not ns_toggle then
+      local prev = S.last_cc_raw[knob]
+      if cc_val ~= prev then
+        local dir = cc_val > prev and 1 or -1
+        local cur = reaper.TrackFX_GetParamNormalized(track, fx, param)
+        reaper.TrackFX_SetParamNormalized(track, fx, param, clamp(cur + dir * ns_step, 0, 1))
+      end
+      return
+    end
+  end
 
   if profile.knob_relative[knob] then
     -- Relative mode: accumulate delta from previous CC value; no soft takeover needed.
