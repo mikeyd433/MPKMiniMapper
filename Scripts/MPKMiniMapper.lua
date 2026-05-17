@@ -688,6 +688,21 @@ local function autofill_params(profile,track,fx_idx,category)
       end
     end
   end
+
+  -- Safety pass: clear any duplicate param_idx assignments that could cause two knobs
+  -- to control the same parameter simultaneously.
+  local seen_params={}
+  for k=1,8 do
+    local p=profile.knob_params[k]
+    if p and p>=0 then
+      if seen_params[p] then
+        -- Earlier knob already owns this param — clear this assignment
+        profile.knob_params[k]=-1; profile.knob_labels[k]=""
+      else
+        seen_params[p]=k
+      end
+    end
+  end
 end
 
 -- Probe a plugin parameter at 64 evenly-spaced normalized values.
@@ -837,6 +852,10 @@ local function check_engaged(k, cc_val, cur_norm)
 end
 
 local function bank1_apply(knob,cc_val,track)
+  -- Belt-and-suspenders: this function must never fire while a plugin bank is active.
+  -- The call site already guards this, but a double-check prevents K5 scrub from
+  -- firing in plugin banks if the code path ever changes.
+  if S.active_bank ~= BANK_FOLLOW then return end
   if not track then return end
   local norm=cc_norm(cc_val)
   if knob==1 then
@@ -2135,17 +2154,26 @@ local function draw_param_panel(x,y,w,h)
       local probe_lbl=is_stepped and ("Stepped ("..nsteps.." steps)") or "Probe Range / Steps"
       local probe_col=is_stepped and {0.25,0.55,0.35} or nil
       if btn(x+6,sy+18,w-12,16,probe_lbl,probe_col) then
-        local emin,emax,stepped,snorms=probe_param_range(S.last_track,pfx_probe,pidx)
-        profile.knob_min[k]=emin; profile.knob_max[k]=emax
+        -- Probe detects step structure only — does NOT touch knob_min/knob_max.
+        -- Use the Min/Max sliders above if you want to restrict the range manually.
+        local _,_,stepped,snorms=probe_param_range(S.last_track,pfx_probe,pidx)
         profile.knob_stepped[k]=stepped
         profile.knob_step_norms[k]=snorms
         S.config_dirty=true; reset_knob_engagement()
         if stepped then status("Stepped: "..#snorms.." discrete values")
-        else status(string.format("Range probed: %.3f \xe2\x80\x93 %.3f",emin,emax)) end
+        else status("No discrete steps detected — parameter is continuous") end
+      end
+      -- Reset range back to full 0-1 if Min/Max were manually narrowed
+      if (profile.knob_min[k] or 0) ~= 0 or (profile.knob_max[k] or 1) ~= 1 then
+        if btn(x+6,sy+36,w-12,13,"Reset range to 0\xe2\x80\x931",{0.4,0.3,0.3}) then
+          profile.knob_min[k]=0; profile.knob_max[k]=1
+          S.config_dirty=true; reset_knob_engagement()
+          status("K"..k.." range reset to full 0\xe2\x80\x931")
+        end
       end
       -- Allow toggling stepped off manually
       if is_stepped then
-        if btn(x+6,sy+36,w-12,14,"Clear stepped (use absolute)",{0.4,0.3,0.3}) then
+        if btn(x+6,sy+52,w-12,14,"Clear stepped (use absolute)",{0.4,0.3,0.3}) then
           profile.knob_stepped[k]=false; profile.knob_step_norms[k]=nil
           S.config_dirty=true; status("K"..k.." back to absolute mode")
         end
