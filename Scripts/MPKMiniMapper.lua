@@ -1171,9 +1171,16 @@ local function plugin_bank_apply(knob,cc_val,track,bank_id)
         -- 2^(1/3) ≈ 1.259 puts three evenly-spaced steps between each doubling
         -- (e.g. 1/4 note → dotted 1/4 → 3/8 → 1/2 note → …).
         -- When the parameter is at zero, bootstrap from one native step up.
+        -- When going down and already at or below one step, snap to exactly zero
+        -- so the parameter can reach its minimum (e.g. Length(time) default 0.00).
         local RATIO = 2^(1/3)
-        local base  = (cur > 0) and cur or ns_step
-        local new_val = (dir > 0) and (base * RATIO) or (base / RATIO)
+        local new_val
+        if dir > 0 then
+          local base = (cur > 0) and cur or ns_step
+          new_val = base * RATIO
+        else
+          new_val = (cur <= ns_step) and 0 or (cur / RATIO)
+        end
         reaper.TrackFX_SetParamNormalized(track, fx, param, clamp(new_val, 0, 1))
       end
       return
