@@ -421,6 +421,7 @@ local S = {
 
   dbg_last_cc       = 0,   -- last CC number seen (for debug bar)
   dbg_last_val      = 0,   -- last CC value seen
+  dbg_last_route    = "",  -- last knob routing description (bank + plugin + param)
 }
 
 -- ============================================================
@@ -1429,9 +1430,22 @@ local function process_midi_event(msg1,msg2,msg3,track)
           build_param_cache(k)
         end
         local bcat = S.bank_defs[S.active_bank] and S.bank_defs[S.active_bank].category
-        if S.active_bank==BANK_FOLLOW then bank1_apply(k,val,track)
-        elseif bcat=="Drums" then drum_bank_apply(k,val,track,S.active_bank)
-        else plugin_bank_apply(k,val,track,S.active_bank) end
+        local bname_d = S.bank_defs[S.active_bank] and S.bank_defs[S.active_bank].name or "?"
+        if S.active_bank==BANK_FOLLOW then
+          bank1_apply(k,val,track)
+          S.dbg_last_route="[Follow Track] K"..k.." → "..BANK1_LABELS[k]
+        elseif bcat=="Drums" then
+          drum_bank_apply(k,val,track,S.active_bank)
+          S.dbg_last_route="[Drums] K"..k
+        else
+          -- Log which plugin is being targeted BEFORE applying, so the user can
+          -- see in Setup → status bar if the wrong plugin is being picked up.
+          local bdef_d=S.bank_defs[S.active_bank]
+          local fx_d,pn_d=bdef_d and find_fx_for_bank(track,bdef_d) or nil,nil
+          local plabel=pn_d or "(no plugin)"
+          plugin_bank_apply(k,val,track,S.active_bank)
+          S.dbg_last_route="["..bname_d.."] K"..k.." → "..(S.knob_labels[k] or "?").." ("..plabel..")"
+        end
         -- In relative mode K5 never updates last_cc_raw — each CC is a signed increment,
         -- not a new absolute position, so the stored value must stay at 64.
         if not (k==5 and S.scrub_relative) then S.last_cc_raw[k]=val end
@@ -2748,9 +2762,10 @@ local function draw_midi_debug_bar()
   if S.midi_track and reaper.ValidatePtr(S.midi_track,"MediaTrack*") then
     recsrc_val=math.floor(reaper.GetMediaTrackInfo_Value(S.midi_track,"I_RECSRC") or -1)
   end
-  local msg=string.format("DBG  ready=%s  idx=%d  params=%d  WP=%d  RP=%d  RECSRC=%d  lastCC=%d val=%d",
-    tostring(S.jsfx_ready), S.jsfx_idx, n_params, wp_live, S.jsfx_rp,
-    recsrc_val, S.dbg_last_cc, S.dbg_last_val)
+  local route=S.dbg_last_route or ""
+  local msg=string.format("DBG  ready=%s  WP=%d  RP=%d  RECSRC=%d  CC=%d val=%d  | %s",
+    tostring(S.jsfx_ready), wp_live, S.jsfx_rp,
+    recsrc_val, S.dbg_last_cc, S.dbg_last_val, route)
   local bh=16
   fill_rect(0,gfx.h-bh,gfx.w,bh,{0.05,0.25,0.05})
   gfx.setfont(FONT_SMALL,"Arial",12,0)
