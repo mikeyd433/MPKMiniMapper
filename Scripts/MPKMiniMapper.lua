@@ -389,6 +389,7 @@ local S = {
   last_cc_raw       = {64,64,64,64,64,64,64,64},  -- default to center for scrub
   knob_touched_time = {0,0,0,0,0,0,0,0},          -- time_precise() of last CC for each knob
   knob_engaged      = {false,false,false,false,false,false,false,false},  -- soft-takeover: true once knob has caught up to param
+  knob_stepped_accum= {},  -- per-knob CC delta accumulator for stepped params (transient, not saved)
   pending_mode      = nil,    -- set in button handlers; applied at start of next loop tick
 
   plugin_library    = {},
@@ -876,7 +877,7 @@ end
 -- ============================================================
 
 local function reset_knob_engagement()
-  for i=1,8 do S.knob_engaged[i]=false end
+  for i=1,8 do S.knob_engaged[i]=false; S.knob_stepped_accum[i]=0 end
 end
 
 -- Check soft takeover. cur_norm is the current param value expressed as 0-1
@@ -1122,14 +1123,22 @@ local function plugin_bank_apply(knob,cc_val,track,bank_id)
   local lo=profile.knob_min[knob] or 0
   local hi=profile.knob_max[knob] or 1
 
-  -- Stepped parameter: use direction-based step control instead of absolute CC position.
-  -- Each knob turn increments or decrements the step index by one.
+  -- Stepped parameter: accumulate CC delta and advance exactly one step per
+  -- THRESH units accumulated.  The MPK Mini pots send consecutive absolute values
+  -- (delta = 1 per event), so a simple delta-threshold check would never fire.
+  -- Accumulating gives smooth one-step-at-a-time control at any turn speed.
+  -- THRESH = 3 → ~42 steps across the full 0-127 pot range, covering most
+  -- musical-timing step counts (typically 20-40 values).
   local step_norms = profile.knob_step_norms and profile.knob_step_norms[knob]
   if profile.knob_stepped and profile.knob_stepped[knob] and step_norms and #step_norms > 1 then
-    local prev  = S.last_cc_raw[knob]
-    local delta = cc_val - prev
-    if math.abs(delta) < 2 then return end  -- ignore jitter
-    local dir   = delta > 0 and 1 or -1
+    local THRESH = 3
+    local delta  = cc_val - S.last_cc_raw[knob]
+    if delta == 0 then return end
+    S.knob_stepped_accum[knob] = (S.knob_stepped_accum[knob] or 0) + delta
+    if math.abs(S.knob_stepped_accum[knob]) < THRESH then return end
+    local dir = S.knob_stepped_accum[knob] > 0 and 1 or -1
+    -- Consume exactly one step's worth; keep remainder for next event
+    S.knob_stepped_accum[knob] = S.knob_stepped_accum[knob] - dir * THRESH
     local cur   = reaper.TrackFX_GetParamNormalized(track, fx, param)
     local best_i, best_d = 1, math.huge
     for i, sn in ipairs(step_norms) do
