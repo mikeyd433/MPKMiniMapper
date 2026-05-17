@@ -531,7 +531,35 @@ local function load_config(path)
   if data.scrub_sensitivity  then S.scrub_sensitivity   = data.scrub_sensitivity end
   if data.scrub_relative ~= nil then S.scrub_relative  = data.scrub_relative    end
   if data.plugin_library     then S.plugin_library      = data.plugin_library    end
-  if data.plugin_profiles    then S.plugin_profiles     = data.plugin_profiles   end
+  if data.plugin_profiles    then
+    S.plugin_profiles = data.plugin_profiles
+    -- JSON encodes sparse integer-keyed tables as objects with string keys ("1","2"...).
+    -- Convert them back to integer keys so profile.knob_params[knob] (integer) works.
+    local int_keyed = {"knob_params","knob_labels","knob_defaults","knob_min","knob_max",
+                       "knob_relative","knob_stepped","knob_step_norms"}
+    for _, profile in pairs(S.plugin_profiles) do
+      if type(profile) == "table" then
+        for _, field in ipairs(int_keyed) do
+          local t = profile[field]
+          if type(t) == "table" then
+            local new = {}
+            for k, v in pairs(t) do new[tonumber(k) or k] = v end
+            profile[field] = new
+          end
+        end
+        -- knob_step_norms values are themselves arrays; re-index those too
+        if type(profile.knob_step_norms) == "table" then
+          for k, arr in pairs(profile.knob_step_norms) do
+            if type(arr) == "table" then
+              local new = {}
+              for sk, sv in pairs(arr) do new[tonumber(sk) or sk] = sv end
+              profile.knob_step_norms[k] = new
+            end
+          end
+        end
+      end
+    end
+  end
   if type(data.knob_ccs)=="table" then
     for i=1,8 do if data.knob_ccs[i] then S.knob_ccs[i]=data.knob_ccs[i] end end
   end
@@ -1123,53 +1151,47 @@ local function plugin_bank_apply(knob,cc_val,track,bank_id)
   local hi=profile.knob_max[knob] or 1
 
   -- Stepped parameter: zone mapping with soft takeover.
-  -- Strategy 1 — use REAPER's native TrackFX_GetParameterStepSizes when the plugin
-  --   reports a step size.  Gives accurate evenly-spaced zones without probing.
-  -- Strategy 2 — fall back to the probed step_norms table when native size is 0.
-  --   Sets to the MIDPOINT of each step's range rather than its lower boundary so
-  --   floating-point edge cases don't accidentally land on the wrong step.
-  -- In both cases the 0-127 pot range maps to a step INDEX (not a raw norm value),
-  -- so every step occupies an equal physical zone on the pot regardless of how
-  -- unevenly the steps are distributed across the 0-1 normalised range.
-  -- Soft takeover: the knob must reach the zone for the current step before engaging.
-  local step_norms = profile.knob_step_norms and profile.knob_step_norms[knob]
-  if profile.knob_stepped and profile.knob_stepped[knob] then
-    -- Strategy 1: native step size from REAPER
+  -- Strategy 1 — always try REAPER's native TrackFX_GetParameterStepSizes first.
+  --   Works without probing. The 0-127 pot maps to N equal index zones so every
+  --   step is reachable regardless of how steps are distributed in normalized space.
+  -- Strategy 2 — probed step_norms: used when the plugin reports no native step size
+  --   (e.g. delay time as continuous ms/beats that still has discrete display values).
+  --   Sets to the exact probed norm value for reliable snap.
+  if not profile.knob_relative[knob] then
     local ns_ok, ns_step = reaper.TrackFX_GetParameterStepSizes(track, fx, param)
     if ns_ok and ns_step and ns_step > 0 then
-      local n   = math.max(2, math.floor(1.0 / ns_step + 0.5))
-      local cur = reaper.TrackFX_GetParamNormalized(track, fx, param)
-      local cur_i   = clamp(math.floor(cur / ns_step + 0.5), 0, n - 1)
+      local n      = math.max(2, math.floor(1.0 / ns_step + 0.5))
+      local cur    = reaper.TrackFX_GetParamNormalized(track, fx, param)
+      local cur_i  = clamp(math.floor(cur / ns_step + 0.5), 0, n - 1)
       local cur_norm = cur_i / math.max(n - 1, 1)
       if not check_engaged(knob, cc_val, cur_norm) then return end
       local target_i = clamp(math.floor(cc_val / 127 * (n - 1) + 0.5), 0, n - 1)
       if target_i ~= cur_i then
-        -- Set to centre of target step's range so REAPER reliably snaps to it
         reaper.TrackFX_SetParamNormalized(track, fx, param,
           clamp((target_i + 0.5) * ns_step, 0, 1))
       end
       return
     end
-    -- Strategy 2: probed step_norms
-    if step_norms and #step_norms > 1 then
-      local n = #step_norms
-      local target_i = clamp(math.floor(cc_val / 127 * (n - 1) + 0.5) + 1, 1, n)
-      local cur = reaper.TrackFX_GetParamNormalized(track, fx, param)
-      local cur_i, best_d = 1, math.huge
-      for i, sn in ipairs(step_norms) do
-        local d = math.abs(cur - sn)
-        if d < best_d then best_d = d; cur_i = i end
-      end
-      local cur_as_norm = (cur_i - 1) / math.max(n - 1, 1)
-      if not check_engaged(knob, cc_val, cur_as_norm) then return end
-      if target_i ~= cur_i then
-        -- Midpoint of target step's range: more reliable than the lower boundary
-        local hi_bound = (target_i < n) and step_norms[target_i + 1] or 1.0
-        reaper.TrackFX_SetParamNormalized(track, fx, param,
-          clamp((step_norms[target_i] + hi_bound) * 0.5, 0, 1))
-      end
-      return
+  end
+  -- Strategy 2: probed step_norms (user clicked "Probe" for this knob).
+  -- knob_step_norms keys are integers after the JSON round-trip fix in load_config.
+  local step_norms = profile.knob_step_norms and profile.knob_step_norms[knob]
+  if profile.knob_stepped and profile.knob_stepped[knob]
+      and step_norms and #step_norms > 1 then
+    local n        = #step_norms
+    local target_i = clamp(math.floor(cc_val / 127 * (n - 1) + 0.5) + 1, 1, n)
+    local cur      = reaper.TrackFX_GetParamNormalized(track, fx, param)
+    local cur_i, best_d = 1, math.huge
+    for i, sn in ipairs(step_norms) do
+      local d = math.abs(cur - sn)
+      if d < best_d then best_d = d; cur_i = i end
     end
+    local cur_as_norm = (cur_i - 1) / math.max(n - 1, 1)
+    if not check_engaged(knob, cc_val, cur_as_norm) then return end
+    if target_i ~= cur_i then
+      reaper.TrackFX_SetParamNormalized(track, fx, param, step_norms[target_i])
+    end
+    return
   end
 
   if profile.knob_relative[knob] then
